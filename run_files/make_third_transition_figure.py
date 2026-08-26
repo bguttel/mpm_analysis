@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 # ============================================================
 
 PANEL_B_JSON = Path(
-    r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\misc\mpm_analysis_results_ens_avg_scan_experiment_results_50_20260129_204832.json"
+    r"C:\Users\admin\Weizmann Institute Dropbox\Noam Nezer\Quantum Circuits Lab\Common\QuantumZeno\Paper\zeno_paper_data\scan_experiment_results_50\fitting_results_20260102_155334\mpm_analysis_results_ens_avg_scan_experiment_results_50_20260129_204832.json"
 )
 
 PANEL_A_DATA_FOLDER = Path(
