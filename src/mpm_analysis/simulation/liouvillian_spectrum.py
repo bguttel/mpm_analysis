@@ -1,17 +1,4 @@
-"""
-liouvillian_spectrum.py
------------------------
-Compute eigenvalues of the 5×5 Liouvillian matrix
 
-    L(λ, k) =
-    ⎛ -2λΩ      iΩ/2    -iΩ/2    0       2λΩe^{ik} ⎞
-    ⎜  iΩ/2  -λΩ-2γz      0    -iΩ/2       0        ⎟
-    ⎜ -iΩ/2      0    -λΩ-2γz   iΩ/2       0        ⎟
-    ⎜   0      -iΩ/2    iΩ/2     0          0        ⎟
-    ⎝  2λΩ       0        0       0         -2λ      ⎠
-
-as a function of λ at fixed k (default k=π).
-"""
 from __future__ import annotations
 
 import numpy as np
@@ -19,48 +6,39 @@ import numpy as np
 from mpm_analysis.analysis.pole_sorting import sort_poles_canonical
 
 
-def build_liouvillian(lam: float, Omega: float, gamma_z: float, k: float = np.pi) -> np.ndarray:
-    """Return the 5×5 Liouvillian matrix as a complex numpy array."""
+def build_liouvillian(lam: float, tau_B: float, T2: float, T1: float, Omega: float, k: float = np.pi) -> np.ndarray:
+    """Return the 4x4 Liouvillian matrix as a complex numpy array."""
     eik = np.exp(1j * k)
-    h = 1j * Omega / 2
+    alpha = 2 * lam * Omega
+
     return np.array(
-        [
-            [-2 * lam * Omega,  h,              -h,             0,   2 * lam * Omega * eik],
-            [ h,  -lam * Omega - 2 * gamma_z,   0,             -h,   0                    ],
-            [-h,               0,  -lam * Omega - 2 * gamma_z,  h,   0                    ],
-            [ 0,              -h,               h,              0,   0                    ],
-            [ 2 * lam * Omega,  0,               0,             0,  -2 * lam             ],
-        ],
-        dtype=complex,
+        [[-1/tau_B, alpha/2, 0, -alpha/2],
+         [eik/tau_B, -alpha/2, 0, alpha/2],
+         [0, 0, -1/T2 - alpha/2, Omega],
+         [-eik/tau_B , alpha/2 - 1/T1, -Omega, -alpha/2 - 1/T1]
+        ], dtype=complex
     )
 
 
 class LiouvillianSpectrum:
-    """Scan eigenvalues of the 5×5 Liouvillian over a range of λ values.
-
-    Parameters
-    ----------
-    Omega:
-        Rabi frequency Ω (rad/µs).  Default matches PostSelectedDynamicsSimulator.
-    gamma_z:
-        Dephasing rate γ_z = 1/T_D (µs⁻¹).  Default: 1/21.0.
-    k:
-        Quasi-momentum (radians).  Default: π.
-    lambda_min, lambda_max, n_lambda:
-        Scan range and resolution.
-    """
+    """Scan eigenvalues of the 4×4 Liouvillian over a range of λ values"""
 
     def __init__(
         self,
         Omega: float = 0.628,
-        gamma_z: float = 1.0 / 66,
+        T1: float = 15,
+        T2: float = 21.0,
+        tau_B: float = 4.0,
         k: float = np.pi,
-        lambda_min: float = 0.6,
+        lambda_min: float = 0.2,
         lambda_max: float = 1.8,
         n_lambda: int = 200,
+
     ) -> None:
         self.Omega = Omega
-        self.gamma_z = gamma_z
+        self.T1 = T1
+        self.T2 = T2
+        self.tau_B = tau_B
         self.k = k
         self.lambda_vals = np.linspace(lambda_min, lambda_max, n_lambda)
 
@@ -69,12 +47,12 @@ class LiouvillianSpectrum:
 
         Returns
         -------
-        np.ndarray, shape (n_lambda, 5), dtype complex
+        np.ndarray, shape (n_lambda, 4), dtype complex
             Eigenvalues sorted by real part (most negative first) at each λ.
         """
-        eigs = np.empty((len(self.lambda_vals), 5), dtype=complex)
+        eigs = np.empty((len(self.lambda_vals), 4), dtype=complex)
         for i, lam in enumerate(self.lambda_vals):
-            L = build_liouvillian(lam, self.Omega, self.gamma_z, self.k)
+            L = build_liouvillian(lam=lam, tau_B=self.tau_B, T2=self.T2, T1=self.T1, Omega=self.Omega, k=self.k)
             ev = np.linalg.eigvals(L)
             eigs[i] = sort_poles_canonical(ev)
         return eigs
@@ -101,7 +79,7 @@ class LiouvillianSpectrum:
         else:
             fig = ax_real.get_figure()
 
-        for j in range(5):
+        for j in range(4):
             ax_real.plot(lams, eigs[:, j].real, lw=1.2)
             ax_imag.plot(lams, eigs[:, j].imag, lw=1.2)
 

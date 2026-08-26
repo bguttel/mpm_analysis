@@ -71,6 +71,70 @@ class MPMPipeline:
     # ------------------------------------------------------------------
 
     @classmethod
+    def from_loader(
+        cls,
+        loader,
+        folder: str | Path,
+        *,
+        data_mode: str | None = None,
+        source_tag: str | None = None,
+        observables: list[str] | str | None = None,
+        steps: list[AnalysisStep] | None = None,
+        lambda_range: tuple[float, float] | None = None,
+        max_files: int | None = None,
+        t_max: float | None = None,
+        order: int = 3,
+        n_boot: int = 2000,
+        **metadata_kwargs,
+    ) -> "MPMPipeline":
+        """Load data via any ``ExperimentalLoader`` and return a pipeline.
+
+        Parameters
+        ----------
+        loader:
+            A configured loader instance (``EnsembleAverageLoader``,
+            ``PostSelectedLoader``, ``ParityLoader``, ...).
+        data_mode:
+            Experimental data mode tag (``"ens_avg"`` | ``"post_selected"``
+            | ``"parity"`` | ...).  ``source_tag`` is accepted as a
+            deprecated alias.
+        observables:
+            Observable key(s) to load.  ``None`` → the loader's default.
+        """
+        if data_mode is None:
+            data_mode = source_tag
+        if data_mode is None:
+            raise TypeError("from_loader: data_mode is required.")
+        folder = Path(folder)
+        records = loader.load(
+            folder,
+            observables=observables,
+            lambda_range=lambda_range,
+            max_files=max_files,
+            t_max=t_max,
+        )
+        if observables is None:
+            obs_list = sorted({r.observable_key for r in records})
+        elif isinstance(observables, str):
+            obs_list = [observables]
+        else:
+            obs_list = list(observables)
+        meta = {
+            "analysis_type": "mpm",
+            "source_folder": str(folder),
+            "data_mode": data_mode,
+            "source_tag": data_mode,   # legacy alias kept for old readers
+            "observables": obs_list,
+            # Which lambda axis this result lives on — see
+            # ExperimentalLoader.lambda_source
+            "lambda_source": getattr(loader, "lambda_source",
+                                     "json:lambda_zeno_estimation"),
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            **metadata_kwargs,
+        }
+        return cls(records, steps, metadata=meta, order=order, n_boot=n_boot)
+
+    @classmethod
     def from_ensemble_average(
         cls,
         folder: str | Path,
@@ -81,26 +145,18 @@ class MPMPipeline:
         order: int = 3,
         n_boot: int = 2000,
         csv_path: str | Path | None = None,
+        t_max: float | None = None,
         **metadata_kwargs,
     ) -> "MPMPipeline":
         """Load ensemble-average data and return a ready-to-run pipeline."""
         from mpm_analysis.io.experimental import EnsembleAverageLoader
-        folder = Path(folder)
-        loader = EnsembleAverageLoader(csv_path=csv_path)
-        records = loader.load(
-            folder,
+        return cls.from_loader(
+            EnsembleAverageLoader(csv_path=csv_path), folder,
+            data_mode="ens_avg",
             observables=observables or ["survival"],
-            lambda_range=lambda_range,
-            max_files=max_files,
+            steps=steps, lambda_range=lambda_range, max_files=max_files,
+            t_max=t_max, order=order, n_boot=n_boot, **metadata_kwargs,
         )
-        meta = {
-            "analysis_type": "mpm",
-            "source_folder": str(folder),
-            "source_tag": "ens_avg",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            **metadata_kwargs,
-        }
-        return cls(records, steps, metadata=meta, order=order, n_boot=n_boot)
 
     @classmethod
     def from_post_selected(
@@ -113,6 +169,7 @@ class MPMPipeline:
         order: int = 3,
         n_boot: int = 2000,
         csv_path: str | Path | None = None,
+        t_max: float | None = None,
         **metadata_kwargs,
     ) -> "MPMPipeline":
         """Load post-selected tomography data and return a ready-to-run pipeline.
@@ -125,22 +182,13 @@ class MPMPipeline:
             ``lambda_zeno_estimation`` — this is the updated, HMM-calibrated scale.
         """
         from mpm_analysis.io.experimental import PostSelectedLoader
-        folder = Path(folder)
-        loader = PostSelectedLoader(csv_path=csv_path)
-        records = loader.load(
-            folder,
+        return cls.from_loader(
+            PostSelectedLoader(csv_path=csv_path), folder,
+            data_mode="post_selected",
             observables=observables or ["survival"],
-            lambda_range=lambda_range,
-            max_files=max_files,
+            steps=steps, lambda_range=lambda_range, max_files=max_files,
+            t_max=t_max, order=order, n_boot=n_boot, **metadata_kwargs,
         )
-        meta = {
-            "analysis_type": "mpm",
-            "source_folder": str(folder),
-            "source_tag": "post_selected",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            **metadata_kwargs,
-        }
-        return cls(records, steps, metadata=meta, order=order, n_boot=n_boot)
 
     @classmethod
     def from_parity(
@@ -152,26 +200,18 @@ class MPMPipeline:
         max_files: int | None = None,
         order: int = 3,
         n_boot: int = 2000,
+        t_max: float | None = None,
         **metadata_kwargs,
     ) -> "MPMPipeline":
         """Load parity-scan data and return a ready-to-run pipeline."""
         from mpm_analysis.io.experimental import ParityLoader
-        folder = Path(folder)
-        loader = ParityLoader()
-        records = loader.load(
-            folder,
+        return cls.from_loader(
+            ParityLoader(), folder,
+            data_mode="parity",
             observables=observables or ["parity_real"],
-            lambda_range=lambda_range,
-            max_files=max_files,
+            steps=steps, lambda_range=lambda_range, max_files=max_files,
+            t_max=t_max, order=order, n_boot=n_boot, **metadata_kwargs,
         )
-        meta = {
-            "analysis_type": "mpm",
-            "source_folder": str(folder),
-            "source_tag": "parity",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            **metadata_kwargs,
-        }
-        return cls(records, steps, metadata=meta, order=order, n_boot=n_boot)
 
     @classmethod
     def from_npz(
@@ -203,7 +243,8 @@ class MPMPipeline:
         meta = {
             "analysis_type": "mpm",
             "source_folder": str(path),
-            "source_tag": data_type,
+            "data_mode": data_type,
+            "source_tag": data_type,   # legacy alias
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             **metadata_kwargs,
         }
@@ -224,7 +265,8 @@ class MPMPipeline:
         """
         meta = {
             "analysis_type": "mpm",
-            "source_tag": "simulation",
+            "data_mode": "simulation",
+            "source_tag": "simulation",   # legacy alias
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             **metadata_kwargs,
         }
@@ -259,6 +301,8 @@ class MPMPipeline:
                           if state.get("poles_raw") else 3,
             "step_descriptions": step_descriptions,
         }
+        if state.get("observable_keys") is not None:
+            params["observable_keys"] = list(state["observable_keys"])
 
         if "scan_number" not in self.metadata:
             scan_numbers = {
@@ -269,17 +313,35 @@ class MPMPipeline:
             if len(scan_numbers) == 1:
                 self.metadata["scan_number"] = scan_numbers.pop()
 
-        # Pull omega_DG from first record metadata if available
-        if self.records:
-            omega_dg = self.records[0].metadata.get("omega_DG")
-            if omega_dg is not None:
-                params["omega_DG"] = float(omega_dg)
+        # Pull omega_DG from first record that has it
+        omega_dg = next(
+            (r.metadata.get("omega_DG") for r in self.records if r.metadata.get("omega_DG") is not None),
+            None,
+        )
+        if omega_dg is not None:
+            params["omega_DG"] = float(omega_dg)
+        else:
+            import warnings
+            warnings.warn(
+                "omega_DG not found in any record metadata — pole normalization will fall back "
+                "to 1.0. Check that Omega_DG is present in the experiment JSON files.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Harvest everything else the steps produced, for full-output saving.
+        extras: dict = {}
+        for key in ("refine_params", "refine_cov", "refine_conjugate",
+                    "amplitudes_raw", "L_used"):
+            if state.get(key) is not None:
+                extras[key] = state[key]
 
         self._result = ZenoAnalysisResult(
             metadata=self.metadata,
             parameters=params,
             lambda_values=lambdas,
             poles=poles_result,
+            extras=extras or None,
         )
         print(f"Pipeline complete: {len(lambdas)} lambda points, poles shape {poles_result.decay_rates.shape}")
         return self._result
@@ -292,6 +354,8 @@ class MPMPipeline:
         self,
         output_dir: str | Path,
         stem: str | None = None,
+        *,
+        full: bool = False,
     ) -> Path:
         """Save the most recent ``run()`` result to ``output_dir``.
 
@@ -301,6 +365,10 @@ class MPMPipeline:
             Directory to write into.
         stem:
             Filename stem (without ``.json``).  Auto-generated if ``None``.
+        full:
+            If ``True``, also serialise the raw bootstrap pole samples and
+            the ``extras`` block (refine params/covariances, amplitudes, …)
+            — everything the analysis produced.
 
         Returns
         -------
@@ -310,4 +378,4 @@ class MPMPipeline:
         if self._result is None:
             raise RuntimeError("Call run() before save().")
         from mpm_analysis.io.file_naming import save_result
-        return save_result(self._result, output_dir, stem=stem)
+        return save_result(self._result, output_dir, stem=stem, full=full)

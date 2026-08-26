@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
@@ -48,9 +49,18 @@ def _khz_from_name(fp: Path) -> int:
     return int(m.group(1))
 
 
-def _load_json(path: Path) -> dict:
-    with open(win_long_path(path), "r", encoding="utf-8") as f:
-        return json.load(f)
+def _load_json(path: Path, *, retries: int = 5, delay: float = 3.0) -> dict:
+    # Raw run files live in Dropbox as online-only placeholders; the first
+    # access can transiently raise FileNotFoundError while the sync client
+    # hydrates the file.  Retry with a short pause before giving up.
+    for attempt in range(retries):
+        try:
+            with open(win_long_path(path), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
 
 
 def _get_nested(d: dict, keys: list[str]):
@@ -90,6 +100,32 @@ class ExperimentalLoader(ABC):
     ) -> tuple[float, np.ndarray]:
         """Extract (lambda_val, t_us) from the raw JSON dict."""
 
+    def _bootstrap_stats(self, jd: dict, mask: np.ndarray | None) -> dict | None:
+        """Measurement statistics for the data-resampling bootstrap.
+
+        Subclasses return a dict describing the raw counting statistics of
+        one file (probabilities + shot counts), with all time-dependent
+        arrays sliced by ``mask`` (the ``t_max`` cut).  Attached to every
+        record of the file as ``metadata["bootstrap_stats"]``.  Default:
+        ``None`` — data bootstrap unavailable for this loader.
+        """
+        return None
+
+    @property
+    def lambda_source(self) -> str:
+        """Provenance of the lambda axis, recorded in the saved result.
+
+        ``"json:lambda_zeno_estimation"`` when lambda comes from each file's
+        own parameters, or ``"hmm_csv:<name>"`` when a results CSV rescales it
+        (lambda = Gamma_up_3_states_hmm / 2*Omega_DG).  Written into the
+        result metadata so a saved analysis always states which lambda axis
+        it was produced on — the CSV never travels between scan folders
+        silently.
+        """
+        csv = getattr(self, "_csv_path", None)
+        return "json:lambda_zeno_estimation" if csv is None \
+            else f"hmm_csv:{Path(csv).name}"
+
     def add_extractor(
         self,
         key: str,
@@ -114,6 +150,7 @@ class ExperimentalLoader(ABC):
         *,
         lambda_range: tuple[float, float] | None = None,
         max_files: int | None = None,
+        t_max: float | None = None,
     ) -> list[ObservableRecord]:
         """Load experimental data from a folder.
 
@@ -130,6 +167,9 @@ class ExperimentalLoader(ABC):
         max_files:
             If given, load only the first ``max_files`` files (useful for
             quick local testing).
+        t_max:
+            If given, truncate each signal to times ``t <= t_max`` (in µs).
+            Default ``None`` loads the full time axis.
 
         Returns
         -------
@@ -154,13 +194,23 @@ class ExperimentalLoader(ABC):
             files = files[:max_files]
 
         records: list[ObservableRecord] = []
+        skipped: list[tuple[str, str]] = []
         for fp in files:
             try:
                 jd = _load_json(fp)
                 lambda_val, t_us = self._extract_lambda_and_time(jd, fp)
             except Exception as exc:
-                print(f"Warning: skipping {fp.name}: {exc}")
+                # Collected and summarised after the loop: a lambda-scale CSV
+                # that covers only part of a folder would otherwise bury the
+                # run in one long warning per file.
+                skipped.append((fp.name, str(exc)))
                 continue
+
+            if t_max is not None:
+                mask = t_us <= t_max
+                t_us = t_us[mask]
+            else:
+                mask = None
 
             if lambda_range is not None:
                 if not (lambda_range[0] <= lambda_val <= lambda_range[1]):
@@ -183,9 +233,20 @@ class ExperimentalLoader(ABC):
             if m_scan:
                 meta["scan_number"] = int(m_scan.group(1))
 
+            # Measurement statistics for the data-resampling bootstrap
+            try:
+                stats = self._bootstrap_stats(jd, mask)
+            except Exception as exc:
+                print(f"Warning: no bootstrap stats for {fp.name}: {exc}")
+                stats = None
+            if stats is not None:
+                meta["bootstrap_stats"] = stats
+
             for key in observables:
                 try:
                     signal = self._extractors[key](jd, t_us)
+                    if mask is not None:
+                        signal = signal[mask]
                     records.append(
                         ObservableRecord(
                             lambda_val=lambda_val,
@@ -198,6 +259,13 @@ class ExperimentalLoader(ABC):
                     )
                 except Exception as exc:
                     print(f"Warning: could not extract '{key}' from {fp.name}: {exc}")
+
+        if skipped:
+            print(f"Warning: skipped {len(skipped)}/{len(files)} files:")
+            for name, exc in skipped[:5]:
+                print(f"    {name}: {exc}")
+            if len(skipped) > 5:
+                print(f"    ... and {len(skipped) - 5} more")
 
         records.sort(key=lambda r: (r.lambda_val, r.observable_key))
         return records

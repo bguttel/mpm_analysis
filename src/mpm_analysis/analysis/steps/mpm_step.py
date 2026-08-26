@@ -21,7 +21,10 @@ class MPMStep(AnalysisStep):
         ``"poles_raw"``   : list[np.ndarray]   complex poles per slice
         ``"L_used"``      : list[int]           pencil parameter used per slice
         ``"lambdas"``     : list[float]         lambda values in order
-        ``"observable_key"`` : str
+        ``"observable_key"`` : str              single key, or keys joined by '+'
+        ``"observable_keys"`` : list[str]       keys actually analysed
+        ``"amplitudes_raw"`` : list[np.ndarray] complex amplitudes per slice,
+                                                shape (order,) or (k, order)
 
     Parameters
     ----------
@@ -30,7 +33,9 @@ class MPMStep(AnalysisStep):
     L:
         Pencil parameter override.  ``None`` → auto (N//3).
     observable_key:
-        Which observable to analyse.
+        Which observable(s) to analyse.  A single key runs the classic 1-D
+        pencil; a list of keys runs the joint (multi-signal) pencil — one
+        common pole set per lambda, amplitudes solved per observable.
     plot_svd:
         If ``True``, plot the Hankel SVD singular values vs λ after processing.
         Use this as a calibration step to visually select the model order:
@@ -46,7 +51,7 @@ class MPMStep(AnalysisStep):
         self,
         order: int = 3,
         L: int | None = None,
-        observable_key: str | None = None,
+        observable_key: str | list[str] | None = None,
         *,
         plot_svd: bool = False,
         n_sv: int = 10,
@@ -64,52 +69,73 @@ class MPMStep(AnalysisStep):
         records: list[ObservableRecord],
         state: dict[str, Any],
     ) -> dict[str, Any]:
-        from mpm_analysis.analysis.matrix_pencil import matrix_pencil_method
-        from mpm_analysis.analysis.pole_sorting import sort_poles_canonical, enforce_pole_count
+        from mpm_analysis.analysis.matrix_pencil import (
+            matrix_pencil_method,
+            solve_linear_amplitudes,
+        )
+        from mpm_analysis.analysis.pole_sorting import (
+            sort_poles_canonical,
+            enforce_pole_count,
+            track_branches_across_lambda,
+        )
+        from mpm_analysis.data_types.observables import group_records_by_lambda
 
-        # Derive observable_key from records if not set explicitly
-        obs_key = self.observable_key
-        if obs_key is None:
+        # Normalise observable_key to a list of keys
+        if self.observable_key is None:
             if not records:
                 raise ValueError("MPMStep: records is empty; cannot derive observable_key.")
-            obs_key = records[0].observable_key
+            keys = [records[0].observable_key]
+        elif isinstance(self.observable_key, str):
+            keys = [self.observable_key]
+        else:
+            keys = list(self.observable_key)
+        obs_key = keys[0] if len(keys) == 1 else "+".join(keys)
 
-        slices = sorted(
-            [r for r in records if r.observable_key == obs_key],
-            key=lambda r: r.lambda_val,
-        )
+        if len(keys) == 1:
+            slices = sorted(
+                [r for r in records if r.observable_key == keys[0]],
+                key=lambda r: r.lambda_val,
+            )
+            groups = [(r.lambda_val, r.t, r.signal, [r]) for r in slices]
+        else:
+            groups = group_records_by_lambda(records, keys)
 
-        if not slices:
+        if not groups:
             raise ValueError(
-                f"MPMStep: no records found with observable_key='{obs_key}'. "
+                f"MPMStep: no records found with observable_key(s) {keys}. "
                 f"Available keys: {sorted({r.observable_key for r in records})}."
             )
 
         poles_raw = []
+        amplitudes_raw = []
         L_used = []
         lambdas = []
         sv_list = []
 
-        for rec in slices:
+        for lam, t, Y, _recs in groups:
             try:
-                poles, sv, L_u = matrix_pencil_method(
-                    rec.t, rec.signal, self.order, L=self.L
-                )
+                poles, sv, L_u = matrix_pencil_method(t, Y, self.order, L=self.L)
                 poles = sort_poles_canonical(enforce_pole_count(poles, self.order))
+                amps = solve_linear_amplitudes(t, Y, poles)
                 poles_raw.append(poles)
+                amplitudes_raw.append(amps)
                 L_used.append(L_u)
-                lambdas.append(rec.lambda_val)
+                lambdas.append(lam)
                 sv_list.append(sv)
             except Exception as exc:
-                print(f"Warning: MPMStep failed for lam={rec.lambda_val:.3f}: {exc}")
+                print(f"Warning: MPMStep failed for lam={lam:.3f}: {exc}")
                 poles_raw.append(np.full(self.order, np.nan, dtype=complex))
+                amp_shape = self.order if len(keys) == 1 else (len(keys), self.order)
+                amplitudes_raw.append(np.full(amp_shape, np.nan, dtype=complex))
                 L_used.append(0)
-                lambdas.append(rec.lambda_val)
+                lambdas.append(lam)
                 sv_list.append(np.array([np.nan]))
 
         if self.plot_svd and sv_list:
+            import matplotlib
             import matplotlib.pyplot as plt
             from mpm_analysis.plotting.exploratory import plot_svd_singular_values
+            from mpm_analysis.utils.windows_paths import win_long_path
 
             valid = [(lam, sv) for lam, sv in zip(lambdas, sv_list)
                      if not np.all(np.isnan(sv))]
@@ -124,14 +150,28 @@ class MPMStep(AnalysisStep):
                 fig.tight_layout()
                 if self.save_dir is not None:
                     fname = self.save_dir / f"svd_{obs_key}.png"
-                    fig.savefig(fname, bbox_inches="tight")
+                    # win_long_path: deep lab folders exceed MAX_PATH.
+                    fig.savefig(win_long_path(fname), bbox_inches="tight")
                     print(f"  SVD figure saved: {fname.name}")
-                plt.show()
+                if matplotlib.get_backend().lower() != "agg":
+                    plt.show(block=False)
+                else:
+                    plt.close(fig)      # headless: the figure is already saved
+
+        # Branch tracking: Hungarian-match each slice's poles to the previous
+        # slice so index i follows one continuous branch across lambda (no
+        # label switching near the EP).  Amplitudes are permuted alongside.
+        poles_raw, perms = track_branches_across_lambda(poles_raw, return_indices=True)
+        amplitudes_raw = [
+            amps[..., idx] for amps, idx in zip(amplitudes_raw, perms)
+        ]
 
         state["poles_raw"] = poles_raw
+        state["amplitudes_raw"] = amplitudes_raw
         state["L_used"] = L_used
         state["lambdas"] = lambdas
         state["observable_key"] = obs_key
+        state["observable_keys"] = keys
         return state
 
     def description(self) -> str:

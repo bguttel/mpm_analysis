@@ -47,6 +47,9 @@ class ObservableRecord:
     metadata:
         Free-form dict for any additional per-record context (e.g. navg,
         false-positive rates, omega_DG).
+    sigma:
+        Optional per-point 1-sigma errors, same shape as ``signal``.
+        ``None`` (default) → uniform weights in any weighted fit.
     """
 
     lambda_val: float
@@ -55,11 +58,14 @@ class ObservableRecord:
     observable_key: str
     source_file: str = ""
     metadata: dict = field(default_factory=dict)
+    sigma: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.t = np.asarray(self.t, dtype=float)
         self.signal = np.asarray(self.signal, dtype=float)
-        
+        if self.sigma is not None:
+            self.sigma = np.asarray(self.sigma, dtype=float)
+
 
 
     @property
@@ -75,6 +81,7 @@ class ObservableRecord:
             observable_key=self.observable_key,
             source_file=self.source_file,
             metadata=self.metadata,
+            sigma=self.sigma[::factor] if self.sigma is not None else None,
         )
 
     def time_slice(self, t_min: float | None = None, t_max: float | None = None) -> "ObservableRecord":
@@ -91,7 +98,49 @@ class ObservableRecord:
             observable_key=self.observable_key,
             source_file=self.source_file,
             metadata=self.metadata,
+            sigma=self.sigma[mask] if self.sigma is not None else None,
         )
+
+
+# ---------------------------------------------------------------------------
+# Multi-observable grouping
+# ---------------------------------------------------------------------------
+
+def group_records_by_lambda(
+    records: list[ObservableRecord],
+    keys: list[str],
+) -> list[tuple[float, np.ndarray, np.ndarray, list[ObservableRecord]]]:
+    """Align records of several observables on a shared time axis, per lambda.
+
+    Returns ``[(lambda_val, t, Y, recs)]`` sorted by lambda, where ``Y`` has
+    shape ``(k, N)`` with rows ordered like ``keys`` and ``recs`` are the
+    matching records in the same order.  A lambda missing any key, or whose
+    records disagree on the time axis, is dropped with a printed warning —
+    this single rule keeps every joint consumer (MPM step, bootstrap,
+    plotting) index-aligned.
+    """
+    by_lambda: dict[float, dict[str, ObservableRecord]] = {}
+    for rec in records:
+        if rec.observable_key in keys:
+            by_lambda.setdefault(rec.lambda_val, {})[rec.observable_key] = rec
+
+    groups = []
+    for lam in sorted(by_lambda):
+        found = by_lambda[lam]
+        missing = [k for k in keys if k not in found]
+        if missing:
+            print(f"Warning: lambda={lam:.4f} missing observable(s) "
+                  f"{missing} — slice dropped.")
+            continue
+        recs = [found[k] for k in keys]
+        t = recs[0].t
+        if any(not np.array_equal(r.t, t) for r in recs[1:]):
+            print(f"Warning: lambda={lam:.4f} has mismatched time axes "
+                  f"across {keys} — slice dropped.")
+            continue
+        Y = np.vstack([r.signal for r in recs])
+        groups.append((lam, t, Y, recs))
+    return groups
 
 
 # ---------------------------------------------------------------------------

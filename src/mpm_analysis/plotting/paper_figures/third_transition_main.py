@@ -1,13 +1,12 @@
 """
 third_transition_main.py
 ------------------------
-Main-text figure for the third quantum Zeno transition paper.
+Main-text figure for the third transition.
 
-Panel A: survival probability linecuts at 3 selected λ values.
+Panel A: P_1 probability linecuts at 3 selected λ values.
 Panel B: decay rate (left axis) + oscillation frequency (right axis) vs λ.
+Partially uses the stale naming convention of survival for P_1 in the code. Figures all follow the new naming.
 
-Replaces the 400-line ``third_transition_main_text_figure_plotting.py`` root
-script behind a clean function signature.
 """
 from __future__ import annotations
 
@@ -34,7 +33,7 @@ def make_third_transition_figure(
     panel_b_result:
         ``ZenoAnalysisResult`` for panel B (decay / frequency vs λ).
     panel_a_records:
-        ``list[ObservableRecord]`` for panel A (survival linecuts).
+        ``list[ObservableRecord]`` for panel A (p1 linecuts).
     fit_dir:
         If given, overlay fit curves in panel A from this directory.
     target_lambdas:

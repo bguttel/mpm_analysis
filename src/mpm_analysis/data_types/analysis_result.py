@@ -186,6 +186,11 @@ class ZenoAnalysisResult:
         Optional; present after ``CriticalPointPipeline`` has been run.
     benchmark_results:
         Optional; list of ``BenchmarkResult`` from ``BenchmarkPipeline``.
+    extras:
+        Optional dict of additional analysis data harvested from the pipeline
+        state (refine_params, refine_cov, amplitudes_raw, L_used, …).
+        Serialised to the ``analysis_extras`` JSON block when saving with
+        ``full=True``.
     """
     metadata: dict
     parameters: dict
@@ -193,6 +198,7 @@ class ZenoAnalysisResult:
     poles: PolesResult
     critical_point_sqrt_fit: SqrtFitResult | None = None
     benchmark_results: list[BenchmarkResult] = field(default_factory=list)
+    extras: dict | None = None
 
     def __post_init__(self) -> None:
         self.lambda_values = np.asarray(self.lambda_values, dtype=float)
@@ -203,7 +209,18 @@ class ZenoAnalysisResult:
     @property
     def omega_s(self) -> float:
         """Return omega_DG from parameters (normalization factor)."""
-        return float(self.parameters.get("omega_DG", 1.0))
+        import warnings
+        val = self.parameters.get("omega_DG")
+        if val is None:
+            warnings.warn(
+                "omega_DG not found in result.parameters — normalization falls back to 1.0 "
+                "(poles will be in raw units 1/µs). Check that Omega_DG is present in the "
+                "experiment JSON files and that the pipeline ran successfully.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return 1.0
+        return float(val)
 
     @property
     def n_lambda(self) -> int:

@@ -164,7 +164,7 @@ class MPMRRHAStep(AnalysisStep):
                     fname = self.save_dir / f"svd_rrha_{obs_key}.png"
                     fig.savefig(fname, bbox_inches="tight")
                     print(f"  SVD figure saved: {fname.name}")
-                plt.show()
+                plt.show(block=False)
 
         state["poles_raw"] = poles_raw
         state["L_used"] = L_used

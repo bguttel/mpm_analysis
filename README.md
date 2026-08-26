@@ -242,6 +242,59 @@ records = loader.load(folder, observables=["survival", "my_observable"])
 See **[docs/adding_a_new_json_format.md](docs/adding_a_new_json_format.md)**
 for a step-by-step guide with a worked example.
 
+### k-space pole analysis (`click_record_repeated` scans)
+
+The k-space ("FDG transition") pole analysis has **one pipeline** and **two run
+files**, with a simple source selector:
+
+- `source="json"` — read `P(k,t)` directly from the experiment scan JSONs
+  (`KSpaceJSONLoader`).
+- `source="compressed"` — read the compact compressed-click records
+  (`CompressedClickKSpaceLoader`).
+
+Both feed the same `KSpaceAnalysis` → `KSpacePolesResult` via
+`pipeline.kspace_pipeline.KSpacePipeline`. Pick the source with
+`get_kspace_loader(source)` (registry in `kspace/loader.py`).
+
+**1. Preprocessing** (`run_kspace_preprocessing.py`) — build the compressed
+records from the raw `individual_runs/` (the raw `assigned_states` is ~69 GB and
+lives only there). One-time. `MIN_DARK=2` applies the stricter "2-click"
+(`1→00`, `101`=false-negative) rule. Writes to
+`<scan_folder>/compressed_click_analysis/` (timestamped, non-clobbering) with
+`P(n,t)` histograms + per-λ summary figures.
+
+**2. Analysis** (`run_kspace_analysis.py`) — the single run file. Set `SOURCE`
+and the parameters; it loads → analyzes → saves `KSpacePolesResult` → saves the
+full figure set (eigenvalues-vs-λ at k≈π, poles-vs-k decay/freq, parametric, SVD
+spectrum, raw k-space traces + HTML slider, 3-D grids + HTML, braiding-ν).
+Options:
+
+- `BOOTSTRAP_OVER_RUNS=True` (compressed only) — run one pole analysis per
+  individual run → per-pole error bars (`KSpacePolesResult.poles_err`).
+- `THEORY={…}` — overlay theory poles + braiding from
+  `Theory/fake_lindbladian_braid_fixed_2.py` (reused, not duplicated;
+  `analysis/braiding.py`). Manual params for now (Ω from data; T1/T2/τ_B/k_fp set
+  in the run file).
+- `COMPUTE_BRAIDING=True` — braiding characterization ν(λ) of the data.
+- Figures use the `Agg` backend and are always saved; `OPEN_FIGURES=True` opens
+  them (PNG via the OS viewer, HTML in the browser) after the run.
+
+Programmatic use:
+
+```python
+from mpm_analysis.pipeline.kspace_pipeline import KSpacePipeline
+
+out = KSpacePipeline().run(
+    folder, source="compressed",          # or "json"
+    bootstrap_over_runs=False,            # per-run pole error bars (compressed)
+    theory=dict(model="3x3", T1=40, T2=20, tau_B=None, k_fp=0.0),  # or None
+    braiding=True, save_figures=True, open_figures=False,
+)
+```
+
+Full schema, compression algorithm, and the re-compression recipe are in
+**[docs/compressed_click_record.md](docs/compressed_click_record.md)**.
+
 ### Scan number
 
 The loaders automatically parse a trailing integer from the folder name (e.g.

@@ -6,7 +6,7 @@ self-describing.
 
 Filename format
 ~~~~~~~~~~~~~~~
-    <analysis_type>_<source_tag>_N<n_lambda>_lam<min>-<max>_<timestamp>.json
+    <analysis_type>_<data_mode>_N<n_lambda>_lam<min>-<max>_<timestamp>.json
 
 Examples
 ~~~~~~~~
@@ -27,7 +27,7 @@ from pathlib import Path
 
 def build_result_filename(
     analysis_type: str,
-    source_tag: str,
+    data_mode: str,
     lambda_range: tuple[float, float],
     n_lambda: int,
     *,
@@ -40,8 +40,8 @@ def build_result_filename(
     ----------
     analysis_type:
         Short tag for the analysis, e.g. ``"mpm"``, ``"critical_point"``.
-    source_tag:
-        Short tag for the data source, e.g. ``"ens_avg"``, ``"post_selected"``,
+    data_mode:
+        Data mode tag, e.g. ``"ens_avg"``, ``"post_selected"``,
         ``"analytical"``.
     lambda_range:
         ``(lambda_min, lambda_max)`` tuple.
@@ -65,14 +65,14 @@ def build_result_filename(
     lam_min, lam_max = lambda_range
     scan_seg = f"_scan{scan_number}" if scan_number is not None else ""
     return (
-        f"{analysis_type}_{source_tag}{scan_seg}_N{n_lambda}"
+        f"{analysis_type}_{data_mode}{scan_seg}_N{n_lambda}"
         f"_lam{lam_min:.2f}-{lam_max:.2f}_{ts}.{extension}"
     )
 
 
 def build_figure_filename(
     figure_tag: str,
-    source_tag: str,
+    data_mode: str,
     *,
     scan_number: int | None = None,
     extension: str = "pdf",
@@ -83,8 +83,8 @@ def build_figure_filename(
     ----------
     figure_tag:
         Descriptive tag, e.g. ``"third_transition_main"``.
-    source_tag:
-        Short tag for the data used, e.g. ``"ens_avg"``.
+    data_mode:
+        Data mode tag, e.g. ``"ens_avg"``.
     scan_number:
         If the figure is from a scan, the scan number.  Omitted if ``None``.
     extension:
@@ -92,7 +92,7 @@ def build_figure_filename(
     """
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
     scan_seg = f"_scan{scan_number}" if scan_number is not None else ""
-    return f"{figure_tag}_{source_tag}{scan_seg}_{ts}.{extension}"
+    return f"{figure_tag}_{data_mode}{scan_seg}_{ts}.{extension}"
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +103,8 @@ def save_result(
     result,
     output_dir: str | Path,
     stem: str | None = None,
+    *,
+    full: bool = False,
 ) -> Path:
     """Save a ``ZenoAnalysisResult`` to ``output_dir`` with an auto-generated name.
 
@@ -114,6 +116,9 @@ def save_result(
         Directory to write into (created if absent).
     stem:
         If given, use ``<stem>.json`` instead of an auto-generated name.
+    full:
+        Passed to ``save_analysis_result`` — also serialise raw pole samples
+        and the ``analysis_extras`` block.
 
     Returns
     -------
@@ -121,10 +126,14 @@ def save_result(
         Path to the saved file.
     """
     # Import here to avoid circular dependency at module level
+    import os
+
     from mpm_analysis.io.analysis_json import save_analysis_result
+    from mpm_analysis.utils.windows_paths import win_long_path
 
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # win_long_path: deep lab folders exceed MAX_PATH on Windows.
+    os.makedirs(win_long_path(output_dir), exist_ok=True)
 
     if stem is None:
         lam = result.lambda_values
@@ -132,16 +141,17 @@ def save_result(
         if scan_number is not None:
             scan_number = int(scan_number)
 
-        source_tag = str(result.metadata.get("source_tag", "unknown"))
+        data_mode = str(result.metadata.get("data_mode",
+                                           result.metadata.get("source_tag", "unknown")))
         analysis_type = str(result.analysis_type or "mpm")
         # Keep backward compatibility with old metadata where analysis_type was
-        # set equal to source_tag, which produced duplicated filename segments.
-        if analysis_type == source_tag:
+        # set equal to the data-mode tag, which duplicated filename segments.
+        if analysis_type == data_mode:
             analysis_type = "mpm"
 
         stem = build_result_filename(
             analysis_type=analysis_type,
-            source_tag=source_tag,
+            data_mode=data_mode,
             lambda_range=(float(lam.min()), float(lam.max())),
             n_lambda=len(lam),
             scan_number=scan_number,
@@ -151,7 +161,7 @@ def save_result(
     else:
         out_path = output_dir / (stem if stem.endswith(".json") else stem + ".json")
 
-    save_analysis_result(result, out_path)
+    save_analysis_result(result, out_path, full=full)
     return out_path
 
 
@@ -160,7 +170,7 @@ def save_result(
 # ---------------------------------------------------------------------------
 
 _FNAME_RE = re.compile(
-    r"^(?P<analysis_type>[a-z_]+)_(?P<source_tag>[a-z_]+)"
+    r"^(?P<analysis_type>[a-z_]+)_(?P<data_mode>[a-z_]+)"
     r"(?:_scan(?P<scan_number>\d+))?"   # optional _scanNN segment
     r"_N(?P<n_lambda>\d+)"
     r"_lam(?P<lam_min>[\d.]+)-(?P<lam_max>[\d.]+)"
@@ -173,7 +183,7 @@ def parse_result_filename(filename: str) -> dict | None:
     """Parse a filename generated by ``build_result_filename``.
 
     Returns a dict with keys:
-        ``analysis_type``, ``source_tag``, ``scan_number`` (int or None),
+        ``analysis_type``, ``data_mode`` (also under legacy key ``source_tag``), ``scan_number`` (int or None),
         ``n_lambda``, ``lam_min``, ``lam_max``, ``timestamp``, ``ext``
 
     Returns ``None`` if the filename does not match the expected format.
@@ -184,7 +194,8 @@ def parse_result_filename(filename: str) -> dict | None:
     sn = m.group("scan_number")
     return {
         "analysis_type": m.group("analysis_type"),
-        "source_tag": m.group("source_tag"),
+        "data_mode": m.group("data_mode"),
+        "source_tag": m.group("data_mode"),   # legacy alias
         "scan_number": int(sn) if sn is not None else None,
         "n_lambda": int(m.group("n_lambda")),
         "lam_min": float(m.group("lam_min")),

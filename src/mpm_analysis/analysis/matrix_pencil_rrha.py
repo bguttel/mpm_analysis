@@ -235,7 +235,7 @@ def get_mpm_poles_from_hankel_rrha(
     from scipy.linalg import pinv, eigvals
 
     U, S, Vh = svd(Y, full_matrices=False)
-    V = Vh.conj().T
+    V = Vh.T
     V_prime = V[:, :order]
     V1 = V_prime[:-1, :]
     V2 = V_prime[1:, :]

@@ -91,6 +91,8 @@ class CriticalPointPipeline:
         a_guess: float | None = None,
         b_guess: float | None = None,
         fit_real_part: bool = True,
+        soft_bounds: bool = False,
+        lambda_c_bounds: tuple[float, float] = (1.0, 1.5),
     ) -> SqrtFitResult:
         """Fit the sqrt model and return the result.
 
@@ -109,6 +111,12 @@ class CriticalPointPipeline:
             defaults to 1.0 / 0.0.
         fit_real_part:
             Whether to also compute the real-splitting fit curve.
+        soft_bounds:
+            Soft guess mode — only λ_c is bounded (``lambda_c_bounds``),
+            ``a``/``b`` are essentially free.  See
+            ``fit_sqrt_to_eigenvalues``.
+        lambda_c_bounds:
+            λ_c bounds used when ``soft_bounds=True``.
 
         Returns
         -------
@@ -158,6 +166,8 @@ class CriticalPointPipeline:
             b_guess=b_guess,
             fit_real_part=fit_real_part,
             omega_s=omega_s,
+            soft_bounds=soft_bounds,
+            lambda_c_bounds=lambda_c_bounds,
         )
 
         print(

@@ -16,10 +16,34 @@ from mpm_analysis.io.experimental.survival_probability import (
     PostSelectedLoader,
     EnsembleAverageLoader,
 )
+from mpm_analysis.io.experimental.click_record_npz import (
+    ClickRecordNpzLoader,
+    ClickRecordData,
+)
+from mpm_analysis.io.experimental.compressed_click_record import (
+    CompressedClickBuilder,
+    CompressedClickLoader,
+    CompressedClickRecord,
+    compress_run,
+    fit_dead_time_exponential,
+    recompress_min_dark,
+    recompress_file_min_dark,
+    recompress_folder_min_dark,
+)
 
 __all__ = [
     "ExperimentalLoader",
     "PostSelectedLoader",
     "EnsembleAverageLoader",
     "ParityLoader",
+    "ClickRecordNpzLoader",
+    "ClickRecordData",
+    "CompressedClickBuilder",
+    "CompressedClickLoader",
+    "CompressedClickRecord",
+    "compress_run",
+    "fit_dead_time_exponential",
+    "recompress_min_dark",
+    "recompress_file_min_dark",
+    "recompress_folder_min_dark",
 ]

@@ -7,6 +7,7 @@ Sub-modules
 ~~~~~~~~~~~
 analysis_json    — load / save ``ZenoAnalysisResult`` ↔ JSON
 experimental/    — load experimental data folders → ``list[ObservableRecord]``
+simulated/       — load simulation NPZ (generate_click_record_raw.py) → ``list[ClickRecordData]``
 simulation       — load analytical / MC NPZ files → ``list[ObservableRecord]``
 file_naming      — auto-generate and parse result filenames
 """

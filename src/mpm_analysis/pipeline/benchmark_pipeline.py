@@ -384,7 +384,7 @@ def _plot_benchmark_fit(
     fig = plot_appendix_bootstrap(result)
     if label:
         fig.suptitle(label)
-    plt.show()
+    plt.show(block=False)
 
 
 def _plot_benchmark_poles(
@@ -427,7 +427,7 @@ def _plot_benchmark_poles(
     ax.set_title(f"Benchmark poles ({len(trial_poles)} trials)")
     ax.grid(False)
     fig.tight_layout()
-    plt.show()
+    plt.show(block=False)
 
 
 def _plot_splitting_comparison(
@@ -479,4 +479,4 @@ def _plot_splitting_comparison(
 
     fig.suptitle("Benchmark splitting comparison across swept noise parameter")
     fig.tight_layout()
-    plt.show()
+    plt.show(block=False)

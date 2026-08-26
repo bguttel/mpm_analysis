@@ -23,17 +23,25 @@ class PoleSamples:
     ----------
     samples:
         Complex array of shape ``(n_lambda, n_boot, order)``.
-        Poles are sorted by real part ascending within each bootstrap draw
-        (canonical order matching ``sort_poles_canonical``).
+        Within each draw, poles are Hungarian-matched to the clean
+        (branch-tracked) poles of that lambda, so a fixed column index means
+        one continuous branch — and draw ``b`` across all lambdas is one
+        complete synthetic realization of the scan.
     observable_key:
         The observable key used to produce these samples.
     lambda_values:
         1-D array of λ values, shape ``(n_lambda,)``.
+    param_samples:
+        Optional float array of shape ``(n_lambda, n_boot, n_par)`` with the
+        quadratic pole parameters ``[r..., c1, c0, ...]`` per draw (see
+        ``pack_pole_params``).  The discriminant ``c1**2 - 4*c0`` is the
+        preferred EP diagnostic near a coalescence.
     """
 
     samples: np.ndarray        # complex (n_lambda, n_boot, order)
     observable_key: str
     lambda_values: np.ndarray  # float  (n_lambda,)
+    param_samples: np.ndarray | None = None  # float (n_lambda, n_boot, n_par)
 
     def __post_init__(self) -> None:
         self.samples = np.asarray(self.samples, dtype=complex)
@@ -48,6 +56,14 @@ class PoleSamples:
                 f"lambda_values length {len(self.lambda_values)} does not match "
                 f"samples.shape[0] = {self.samples.shape[0]}."
             )
+        if self.param_samples is not None:
+            self.param_samples = np.asarray(self.param_samples, dtype=float)
+            if self.param_samples.shape[:2] != self.samples.shape[:2]:
+                raise ValueError(
+                    f"param_samples shape {self.param_samples.shape} does not "
+                    f"match samples shape {self.samples.shape} in "
+                    "(n_lambda, n_boot)."
+                )
 
     @property
     def n_lambda(self) -> int:
