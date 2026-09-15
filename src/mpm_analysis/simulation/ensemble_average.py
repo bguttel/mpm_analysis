@@ -128,7 +128,10 @@ class EnsembleAverageDynamics:
         Parameters
         ----------
         initial_state:
-            [b(0), a(0), x(0), z(0)].  Default: ``[0, 1, 0, 1]``.
+            [p_S(0), p_B(0), x(0), z(0)] — qubit-manifold population,
+            detector-state population, coherence, polarisation (the state
+            ordering of the EOM matrix, cf. paper Eq. S33).  Default
+            ``[1, 0, 0, 1]``: start in the dark excited state |1>.
 
         Returns
         -------
@@ -139,7 +142,7 @@ class EnsembleAverageDynamics:
         if alpha_arr is None:
             alpha_arr = self.alpha_vals
         if initial_state is None:
-            initial_state = np.array([0.0, 1.0, 0.0, 1.0], dtype=float)
+            initial_state = np.array([1.0, 0.0, 0.0, 1.0], dtype=float)
 
         lambda_vals = alpha_arr / (2.0 * self.omega_S)
         results = []
@@ -162,14 +165,53 @@ class EnsembleAverageDynamics:
             results.append({
                 "lambda_val": float(lam),
                 "t": t.copy(),
-                "survival": np.real(state_t[1]),   # a_t ~ survival
-                "b_t": np.real(state_t[0]),
+                "survival": np.real(state_t[0]),   # p_S: qubit-manifold population
+                "b_t": np.real(state_t[1]),        # p_B: detector-state population
                 "x_t": np.real(state_t[2]),
                 "z_t": np.real(state_t[3]),
                 "eigenvalues": evals,
             })
 
         return results
+
+    def populations(
+        self,
+        lambda_vals: np.ndarray | None = None,
+        initial_state: np.ndarray | None = None,
+    ) -> dict:
+        """Three-level populations d, g, b vs time for each lambda.
+
+        Derived from ``simulate``: the qubit manifold {|0>, |1>} has population
+        ``p_S`` and polarisation ``z``, so ``d = (p_S + z)/2`` (excited, dark),
+        ``g = (p_S - z)/2`` (ground, dark) and ``b = p_B`` (bright detector
+        state).  ``d + g + b = 1``.
+
+        Parameters
+        ----------
+        lambda_vals:
+            Lambda sweep (``alpha = 2 lambda omega_S``).  Default:
+            ``self.lambda_vals``.
+
+        Returns
+        -------
+        dict
+            ``lambda_vals`` (n,), ``t`` (nt,), ``d``, ``g``, ``b`` (n, nt).
+        """
+        if lambda_vals is None:
+            lambda_vals = self.lambda_vals
+        lambda_vals = np.asarray(lambda_vals, dtype=float)
+        res = self.simulate(initial_state=initial_state,
+                            alpha_arr=2.0 * self.omega_S * lambda_vals)
+        p_s = np.array([r["survival"] for r in res])
+        z = np.array([r["z_t"] for r in res])
+        b = np.array([r["b_t"] for r in res])
+        return {
+            "lambda_vals": lambda_vals,
+            "t": self.t_vals.copy(),
+            "d": 0.5 * (p_s + z),
+            "g": 0.5 * (p_s - z),
+            "b": b,
+        }
 
     # ------------------------------------------------------------------
     # Adapter
@@ -210,6 +252,8 @@ class EnsembleAverageDynamics:
                         "T1": self.T1,
                         "T_B": self.T_B,
                         "omega_S": self.omega_S,
+                        # key the analysis pipeline reads for normalization
+                        "omega_DG": self.omega_S,
                     },
                 )
             )
@@ -306,7 +350,7 @@ class EnsembleAverageDynamics:
         print(f"Simulation saved: {path}")
 import matplotlib.pyplot as plt
 if __name__ == "__main__":
-    sim = EnsembleAverageDynamics(num_lambdas=100)
+    sim = EnsembleAverageDynamics(num_lambdas=10)
     ax_r, ax_i = sim.plot_eigenvalues()
     plt.tight_layout()
     plt.show()

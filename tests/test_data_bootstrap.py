@@ -349,3 +349,96 @@ def test_discriminant_crossing_samples():
     assert abs(q50 - 0.6) < 0.02
     assert q16 < q50 < q84
     assert np.all(d_lo[np.isfinite(d_lo)] <= d_hi[np.isfinite(d_hi)])
+
+
+# ---------------------------------------------------------------------------
+# post_selected: segment-pooled survival (multinomial over the first-click
+# histogram)
+# ---------------------------------------------------------------------------
+
+def _pooled_stats(n_seg=8, n_axes=2, n_reps=400, seed=0):
+    """Synthetic segmented record → first-click histogram → stats dict."""
+    from mpm_analysis.io.experimental.click_record_npz import (
+        ClickRecordData, first_click_counts, pooled_survival_from_counts,
+    )
+    rng = np.random.default_rng(seed)
+    lengths = np.arange(1, n_seg + 1)
+    traj = rng.random((n_reps * n_axes, int(lengths.sum()))) < 0.1
+    rec = ClickRecordData(
+        lambda_val=1.0, t=np.arange(n_seg + 1) * 0.32, trajectories=traj,
+        source_file="synthetic", metadata={"n_axes": n_axes},
+        segment_lengths=lengths,
+    )
+    counts = first_click_counts(rec)
+    frac, n_succ, n_att = pooled_survival_from_counts(counts)
+    stats = {
+        "data_mode": "post_selected",
+        "survival": frac.copy(), "N_survival": n_reps * n_axes,
+        "S_pooled": frac, "N_attempts_S_pooled": n_att,
+        "pooled_counts": counts, "pooled_mask": None,
+    }
+    return rec, counts, frac, n_succ, n_att, stats
+
+
+def test_first_click_counts_matches_brute_force():
+    rec, counts, frac, n_succ, n_att, _ = _pooled_stats()
+    o = rec.segment_offsets
+    n_seg = rec.n_segments
+    assert counts.shape == (2, n_seg, n_seg + 1)
+    assert (counts.sum(-1) == 400).all()
+    for i in range(1, n_seg + 1):
+        succ = att = 0
+        for L in range(i, n_seg + 1):
+            seg = rec.segment(L - 1)
+            succ += int((~seg[:, :i].any(axis=1)).sum())
+            att += seg.shape[0]
+        assert n_succ[i] == succ and n_att[i] == att
+    # diagonal (own segment only) = the scan's stored definition of p_0(t_i)
+    for i in range(1, n_seg + 1):
+        own = ~rec.segment(i - 1).any(axis=1)
+        assert counts[:, i - 1, 0].sum() == own.sum()
+    assert frac[0] == 1.0 and n_att[0] == rec.N * n_seg
+
+
+def test_pooled_resample_is_multinomial_and_keeps_nesting():
+    _, counts, frac, _, n_att, stats = _pooled_stats()
+    rng = np.random.default_rng(3)
+    n_rep = 3000
+    draws = np.array([
+        bootstrap_post_selected_measurements(stats, ["S_pooled"], rng)[0]
+        for _ in range(n_rep)
+    ])
+    assert draws.shape == (n_rep, len(frac))
+    assert np.allclose(draws[:, 0], 1.0)                    # anchor at p = 1
+    # per-point variance = binomial on the pooled attempts
+    var_exp = frac[1:] * (1 - frac[1:]) / n_att[1:]
+    assert np.allclose(draws[:, 1:].var(axis=0), var_exp, rtol=0.15)
+    # consecutive pooled points share shots → positive correlation; the
+    # per-point binomial fallback would give ~0
+    c = np.corrcoef(draws[:, 1], draws[:, 2])[0, 1]
+    assert c > 0.5
+    stats_fb = {k: v for k, v in stats.items() if k != "pooled_counts"}
+    draws_fb = np.array([
+        bootstrap_post_selected_measurements(stats_fb, ["S_pooled"], rng)[0]
+        for _ in range(n_rep)
+    ])
+    assert abs(np.corrcoef(draws_fb[:, 1], draws_fb[:, 2])[0, 1]) < 0.1
+
+
+def test_pooled_resample_respects_mask_and_anchor():
+    _, counts, frac, _, n_att, stats = _pooled_stats()
+    mask = np.ones(len(frac), dtype=bool)
+    mask[0] = False                          # drop_first_point
+    mask[-2:] = False                        # t_max cut
+    s = dict(stats, S_pooled=frac[mask], N_attempts_S_pooled=n_att[mask],
+             pooled_mask=mask)
+    rng = np.random.default_rng(4)
+    y = bootstrap_post_selected_measurements(s, ["S_pooled"], rng)[0]
+    assert y.shape == (int(mask.sum()),)
+    assert np.all((y >= 0) & (y <= 1))
+    # init_error-style anchor: the t=0 point follows the stored value
+    s2 = dict(stats); s2["S_pooled"] = frac.copy(); s2["S_pooled"][0] = 0.98
+    ys = np.array([bootstrap_post_selected_measurements(s2, ["S_pooled"],
+                                                        rng)[0][0]
+                   for _ in range(500)])
+    assert abs(ys.mean() - 0.98) < 2e-3

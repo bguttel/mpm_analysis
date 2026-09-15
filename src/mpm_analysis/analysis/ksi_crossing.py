@@ -15,9 +15,12 @@ The ksi function computes a ratio between the real parts of poles 1 and 2:
 
     ξ(p₁, p₂) = (2·Re(p₂) − Re(p₁)) / (Re(p₁) − Re(p₂))
 
-This quantity changes sign at the EP: negative on one side (coalescence), zero
-at the EP, positive on the other side.  The zero-crossing λ_ξ is an
-alternative estimate of the critical point, complementing the sqrt fit.
+The zero of ξ is the **state-freezing** transition: the λ at which the slow
+real mode reaches twice the decay rate of the pair, so that the population
+stops relaxing on the experiment's time scale.  It is a DIFFERENT transition
+from the exceptional point, which is the zero of the pair discriminant
+``Delta = c1**2 - 4*c0`` (see :func:`discriminant_crossing_samples`) — on the
+post-selected scan the two sit ~0.14 apart.  Do not label ξ = 0 as the EP.
 
 Pole indexing note
 ~~~~~~~~~~~~~~~~~~
@@ -58,9 +61,9 @@ def ksi(p1: complex, p2: complex) -> float:
 
     Notes
     -----
-    Sign convention: ξ < 0 means p₁ and p₂ are separated (before EP);
-    ξ → ∞ at coalescence; ξ > 0 after EP.  A zero crossing from negative to
-    positive marks the EP.
+    Sign convention: ξ → ±∞ where the two real parts coincide (the pair
+    coalescence itself); a zero crossing of ξ marks the state-freezing
+    transition, not the exceptional point.
     """
     denom = p1.real - p2.real + 1e-12  # guard against exact equality
     return float((2.0 * p2.real - p1.real) / denom)
@@ -185,6 +188,63 @@ def find_zero_crossings(
     return crossings
 
 
+def linfit_zero_crossing(
+    lambdas: np.ndarray,
+    values: np.ndarray,
+    *,
+    half_width: float = 0.15,
+    n_refits: int = 2,
+    direction: str = "any",
+    return_fit: bool = False,
+):
+    """Zero of a straight line fitted to ``values`` around its first crossing.
+
+    Near a square-root exceptional point the discriminant is linear in λ, so a
+    line fitted over a window around the crossing uses every point in that
+    window instead of the two that happen to bracket the sign change.  The
+    window is seeded at the first sign change and re-centred ``n_refits`` times.
+
+    Parameters
+    ----------
+    lambdas, values:
+        The curve, e.g. λ and ``Delta(λ)``.
+    half_width:
+        Half-width in λ of the fit window.
+    n_refits:
+        How often to re-centre the window on the running estimate.
+    direction:
+        Passed to :func:`find_zero_crossings` for the seed.
+    return_fit:
+        Also return ``dict(coef=[slope, intercept], window=bool mask,
+        half_width=...)`` of the last accepted fit (``coef`` is ``None`` when
+        the fit failed) — for plotting.
+
+    Returns
+    -------
+    float or (float, dict)
+        The fitted crossing (NaN if there is none or too few points).
+    """
+    lam = np.asarray(lambdas, dtype=float)
+    val = np.asarray(values, dtype=float)
+    cross = find_zero_crossings(lam, val, direction=direction)
+    x0 = cross[0] if cross else np.nan
+    fit = None
+    for _ in range(n_refits):
+        if not np.isfinite(x0):
+            break
+        w = (np.abs(lam - x0) <= half_width) & np.isfinite(val)
+        if w.sum() >= 5:
+            coef = np.polyfit(lam[w], val[w], 1)
+            fit = dict(coef=coef, window=w, half_width=half_width)
+            x0 = -coef[1] / coef[0] if coef[0] != 0 else np.nan
+        else:
+            x0 = np.nan
+    x0 = float(x0)
+    if return_fit:
+        return x0, (fit or dict(coef=None, window=None, half_width=half_width))
+    return x0
+
+
 def ksi_crossing_samples(
     samples,
     *,
@@ -275,6 +335,8 @@ def discriminant_crossing_samples(
     *,
     lambda_max: float | None = None,
     direction: str = "any",
+    method: str = "first",
+    half_width: float = 0.15,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Per-realization zero crossing of the discriminant ``Delta(lambda)``.
 
@@ -292,14 +354,23 @@ def discriminant_crossing_samples(
         Restrict the analysis to λ ≤ lambda_max.
     direction:
         Passed to ``find_zero_crossings``.
+    method:
+        ``"first"`` (default) records the first sign change of each
+        realization; ``"linfit"`` records the zero of a straight line fitted
+        around it (:func:`linfit_zero_crossing`), which is the less biased
+        estimator when Delta is linear through the EP.
+    half_width:
+        Fit half-window in λ, used by ``method="linfit"``.
 
     Returns
     -------
     (crossings, delta_med, delta_lo, delta_hi)
-        ``crossings``: (n_boot,) first crossing λ per realization (NaN where
+        ``crossings``: (n_boot,) crossing λ per realization (NaN where
         none); ``delta_med``/``delta_lo``/``delta_hi``: (n_lambda,) median
         and 16/84 percentiles of the per-realization Delta curves.
     """
+    if method not in ("first", "linfit"):
+        raise ValueError(f"discriminant_crossing_samples: unknown method '{method}'.")
     if samples.param_samples is None:
         raise ValueError(
             "discriminant_crossing_samples: samples.param_samples is None — "
@@ -317,9 +388,14 @@ def discriminant_crossing_samples(
     n_boot = delta.shape[1]
     crossings = np.full(n_boot, np.nan)
     for b in range(n_boot):
-        cross_b = find_zero_crossings(lam, delta[:, b], direction=direction)
-        if cross_b:
-            crossings[b] = cross_b[0]
+        if method == "linfit":
+            crossings[b] = linfit_zero_crossing(
+                lam, delta[:, b], half_width=half_width, direction=direction
+            )
+        else:
+            cross_b = find_zero_crossings(lam, delta[:, b], direction=direction)
+            if cross_b:
+                crossings[b] = cross_b[0]
 
     # All-NaN lambda slices are expected (failed draws) — summarise quietly.
     with warnings.catch_warnings():
@@ -368,9 +444,26 @@ class KsiCrossingResult:
     crossing_quantiles: tuple[float, float, float] | None = None
 
     @property
-    def lambda_ep(self) -> float | None:
-        """First zero crossing, or ``None`` if no crossing was found."""
+    def lambda_ksi_zero(self) -> float | None:
+        """First zero of ξ — the **state-freezing** transition, not the EP.
+
+        The exceptional point is the zero of the pair discriminant
+        (:func:`discriminant_crossing_samples`); ξ = 0 marks where the slow
+        real mode stops the population from relaxing.  ``None`` when ξ has no
+        zero crossing.
+        """
         return self.zero_crossings[0] if self.zero_crossings else None
+
+    @property
+    def lambda_ep(self) -> float | None:
+        """Deprecated misnomer for :attr:`lambda_ksi_zero` (ξ = 0 is *not* the EP)."""
+        warnings.warn(
+            "KsiCrossingResult.lambda_ep is a misnomer: the zero of ksi is the "
+            "state-freezing transition, not the exceptional point.  Use "
+            "lambda_ksi_zero (or the discriminant crossing for the EP).",
+            DeprecationWarning, stacklevel=2,
+        )
+        return self.lambda_ksi_zero
 
 
 # ---------------------------------------------------------------------------
@@ -436,11 +529,11 @@ class KsiCrossingPipeline:
 
         if crossings:
             print(
-                f"KsiCrossingPipeline: found {len(crossings)} zero crossing(s): "
-                + ", ".join(f"lam_EP ~ {c:.4f}" for c in crossings)
+                f"Ksi (state freezing): found {len(crossings)} zero crossing(s): "
+                + ", ".join(f"lam(ksi=0) ~ {c:.4f}" for c in crossings)
             )
         else:
-            print("KsiCrossingPipeline: no zero crossings found.")
+            print("Ksi (state freezing): no zero crossings found.")
 
         # Bootstrap uncertainty from the raw pole samples, when present.
         # NOTE: samples are read from the *unsliced* PolesResult — slicing a
@@ -461,13 +554,13 @@ class KsiCrossingPipeline:
                 quantiles = (float(q16), float(q50), float(q84))
                 frac_none = 1.0 - n_valid / len(cross_samples)
                 print(
-                    f"KsiCrossingPipeline (bootstrap, n_boot={len(cross_samples)}): "
-                    f"lam_EP = {q50:.4f} +{q84 - q50:.4f} / -{q50 - q16:.4f}  "
+                    f"Ksi (state freezing, bootstrap n_boot={len(cross_samples)}): "
+                    f"lam(ksi=0) = {q50:.4f} +{q84 - q50:.4f} / -{q50 - q16:.4f}  "
                     f"(16/50/84 = {q16:.4f}/{q50:.4f}/{q84:.4f}; "
                     f"{frac_none:.1%} of draws had no crossing)"
                 )
             else:
-                print("KsiCrossingPipeline: no bootstrap draw had a zero crossing.")
+                print("Ksi (state freezing): no bootstrap draw had a zero crossing.")
 
         return KsiCrossingResult(
             lambda_values=lam,

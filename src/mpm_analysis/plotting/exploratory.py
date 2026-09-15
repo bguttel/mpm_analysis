@@ -203,6 +203,49 @@ def plot_eigenvalue_spectrum(
     return ax
 
 
+def plot_spectrum_panels(result, *, title=None, axes=None, figsize=(15, 6)):
+    """The standard two-panel pole diagnostic: all decay rates (left) and all
+    frequencies (right) vs λ, one errorbar series per pole.
+
+    This is the figure ``run.py`` shows after every MPM run; other callers
+    (e.g. the dead-time compression sweep, one figure per ``c``) reuse it so
+    every pole spectrum in the project looks the same.
+
+    Parameters
+    ----------
+    result:
+        ``ZenoAnalysisResult`` (or anything with ``lambda_values``, ``poles``
+        and ``omega_s``).
+    title:
+        Figure suptitle.
+    axes:
+        Two existing axes to draw into; created when ``None``.
+
+    Returns
+    -------
+    (fig, axes)
+    """
+    import matplotlib.pyplot as plt
+
+    if axes is None:
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+    else:
+        fig = axes[0].get_figure()
+    if title:
+        fig.suptitle(title, fontsize=14)
+    plot_eigenvalue_spectrum(result, ax=axes[0], mode="decay")
+    axes[0].set_title("Decay rates", fontsize=12)
+    plot_eigenvalue_spectrum(result, ax=axes[1], mode="frequency")
+    axes[1].set_title("Frequencies", fontsize=12)
+    for ax in axes:
+        ax.tick_params(labelsize=10)
+        ax.xaxis.label.set_size(12)
+        ax.yaxis.label.set_size(12)
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3, linewidth=0.5)
+    return fig, axes
+
+
 def plot_time_traces_slider(
     records,
     *,
@@ -215,6 +258,7 @@ def plot_time_traces_slider(
     mpm_order: int = 3,
     show_fit: bool = True,
     fixed_poles: dict[float, np.ndarray] | None = None,
+    colors: dict[str, str] | None = None,
 ) -> "Slider":
     """Interactive slider to browse per-lambda time traces with optional MPM fit overlay.
 
@@ -258,6 +302,10 @@ def plot_time_traces_slider(
         present here, the overlay uses these poles (amplitudes re-solved
         linearly) instead of re-running MPM — e.g. the refined/smoothed
         poles from an analysis result.
+    colors:
+        Optional mapping ``key -> matplotlib color`` overriding the default
+        per-axis family shades — use it when observables sharing one axis
+        need clearly distinct hues.
 
     Returns
     -------
@@ -352,6 +400,10 @@ def plot_time_traces_slider(
         shades = cmap(np.linspace(0.55, 0.9, len(ks))) if len(ks) > 1 else [cmap(0.75)]
         for k, shade in zip(ks, shades):
             key_color[k] = shade
+        if colors:
+            for k in ks:
+                if k in colors:
+                    key_color[k] = colors[k]
         axis = axes[sc]
         axis_color = cmap(0.8)
         axis.set_ylabel(", ".join(labels.get(k, k) for k in ks), fontsize=11,

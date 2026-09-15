@@ -13,6 +13,69 @@ from pathlib import Path
 import numpy as np
 
 
+def draw_full_spectrum_panel(
+    ax,
+    lambdas: np.ndarray,
+    r_med: np.ndarray,
+    r_lower: np.ndarray,
+    r_upper: np.ndarray,
+    *,
+    real_axis_scale: str = "linear",
+    real_axis_ticks: list | None = None,
+    err_kws: dict | None = None,
+) -> None:
+    """Draw the full-pole-spectrum panel: |Re(e_n)| / Ω_S strands vs λ.
+
+    The shared panel A of the paper bootstrap figures (this module's 3-panel
+    sqrt layout and ``first_transition_main``'s 2-panel discriminant layout).
+    Decay rates arrive already normalized by Ω_S; the critical-λ line, the
+    panel tag and the x-label are the caller's business.
+    """
+    import matplotlib.ticker as ticker
+
+    from mpm_analysis.plotting._style import (
+        LABELS_FONT_SIZE, MARKER_SIZE, LINE_WIDTH, LINECUT_COLORS,
+    )
+
+    colors = LINECUT_COLORS + ["gray"]
+    if err_kws is None:
+        err_kws = dict(
+            elinewidth=LINE_WIDTH * 0.6,
+            capsize=MARKER_SIZE * 1.2,
+            capthick=LINE_WIDTH * 0.6,
+            zorder=10,
+        )
+
+    for k in range(r_med.shape[1]):
+        c = colors[k % len(colors)]
+        ax.errorbar(
+            lambdas, np.abs(r_med[:, k]),
+            yerr=[r_lower[:, k], r_upper[:, k]],
+            color=c, marker="o",
+            markersize=MARKER_SIZE,
+            linestyle="none",
+            label=rf"$\mathrm{{Re}}(e_{{{k+1}}})$",
+            **err_kws,
+        )
+    ax.set_yscale(real_axis_scale)
+    ax.set_ylabel(
+        r"$\mathrm{Re}(e_n)\,/\,\Omega_\mathrm{S}$",
+        fontsize=LABELS_FONT_SIZE, labelpad=0,
+    )
+    ax.legend(loc="upper left", fontsize=LABELS_FONT_SIZE)
+    ax.xaxis.set_minor_locator(ticker.NullLocator())
+    ax.yaxis.set_minor_locator(ticker.NullLocator())
+    if real_axis_scale == "log":
+        ax.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=2))
+        ax.yaxis.set_major_formatter(ticker.LogFormatterMathtext(base=10))
+    elif real_axis_ticks is not None:
+        ax.set_yticks(real_axis_ticks)
+    ax.tick_params(
+        axis="both", which="major",
+        width=LINE_WIDTH, labelsize=LABELS_FONT_SIZE,
+    )
+
+
 def plot_appendix_bootstrap(
     result,
     *,
@@ -61,7 +124,8 @@ def plot_appendix_bootstrap(
 
     from mpm_analysis.plotting._style import (
         TWO_COLUMN_WIDTH, LABELS_FONT_SIZE, MARKER_SIZE, LINE_WIDTH,
-        LAMBDA_OBS_COLOR, LINECUT_COLORS, apply_paper_style, make_ax_lines_wider,
+        LAMBDA_OBS_COLOR, add_panel_letter, apply_paper_style,
+        make_ax_lines_wider,
     )
 
     if fit_validity_limit is None:
@@ -114,7 +178,6 @@ def plot_appendix_bootstrap(
     ax_imag       = fig.add_subplot(gs[1])
     ax_real_split = fig.add_subplot(gs[2], sharex=ax_imag)
 
-    colors = LINECUT_COLORS + ["gray"]
     err_kws = dict(
         elinewidth=LINE_WIDTH * 0.6,
         capsize=MARKER_SIZE * 1.2,
@@ -128,44 +191,21 @@ def plot_appendix_bootstrap(
                 lc, color=LAMBDA_OBS_COLOR, linestyle="--",
                 linewidth=LINE_WIDTH, alpha=0.8, zorder=0,
             )
-        make_ax_lines_wider(ax, labelsize=LABELS_FONT_SIZE, linewidth=LINE_WIDTH)
+        make_ax_lines_wider(ax)
 
-    # --- Panel A: full decay rates ---
-    n_modes = r_med.shape[1]
-    for k in range(n_modes):
-        c = colors[k % len(colors)]
-        ax_real_full.errorbar(
-            lambdas, np.abs(r_med[:, k]),
-            yerr=[r_lower[:, k], r_upper[:, k]],
-            color=c, marker="o",
-            markersize=MARKER_SIZE,
-            linestyle="none",
-            label=rf"$\mathrm{{Re}}(e_{{{k+1}}})$",
-            **err_kws,
-        )
-    ax_real_full.set_yscale(real_axis_scale)
-    ax_real_full.set_ylabel(
-        r"$\mathrm{Re}(e_n)\,/\,\Omega_\mathrm{S}$",
-        fontsize=LABELS_FONT_SIZE, labelpad=0,
+    # --- Panel A: full decay rates (shared with the discriminant layout) ---
+    draw_full_spectrum_panel(
+        ax_real_full, lambdas, r_med, r_lower, r_upper,
+        real_axis_scale=real_axis_scale, real_axis_ticks=real_axis_ticks,
+        err_kws=err_kws,
     )
     ax_real_full.set_xlabel(r"$\lambda$", fontsize=LABELS_FONT_SIZE)
-    ax_real_full.legend(loc="upper left", fontsize=LABELS_FONT_SIZE)
-    ax_real_full.xaxis.set_minor_locator(ticker.NullLocator())
-    ax_real_full.yaxis.set_minor_locator(ticker.NullLocator())
-    if real_axis_scale == "log":
-        ax_real_full.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=2))
-        ax_real_full.yaxis.set_major_formatter(ticker.LogFormatterMathtext(base=10))
-    elif real_axis_ticks is not None:
-        ax_real_full.set_yticks(real_axis_ticks)
     _add_crit_line(ax_real_full)
-    ax_real_full.tick_params(
-        axis="both", which="major",
-        width=LINE_WIDTH, labelsize=LABELS_FONT_SIZE,
-    )
 
-    ax_real_full.text(
-        -0.2, 1.05, "A", transform=ax_real_full.transAxes,
-        fontsize=LABELS_FONT_SIZE * 1.4, fontweight="bold", va="top",
+    add_panel_letter(
+        ax_real_full, "a",
+        x=-0.2, y=1.05, offset_mm=False,
+        fontsize=LABELS_FONT_SIZE * 1.4,
     )
 
     # --- Panel B: imaginary splitting ---
@@ -184,9 +224,10 @@ def plot_appendix_bootstrap(
     plt.setp(ax_imag.get_xticklabels(), visible=False)
     ax_imag.set_yticks([0.0, 0.4, 0.8])
     _add_crit_line(ax_imag)
-    ax_imag.text(
-        -0.2, 1.05, "B", transform=ax_imag.transAxes,
-        fontsize=LABELS_FONT_SIZE * 1.4, fontweight="bold", va="top",
+    add_panel_letter(
+        ax_imag, "b",
+        x=-0.2, y=1.05, offset_mm=False,
+        fontsize=LABELS_FONT_SIZE * 1.4,
     )
 
     # --- Panel C: real splitting ---
@@ -206,9 +247,10 @@ def plot_appendix_bootstrap(
     if real_split_axis_ticks is not None:
         ax_real_split.set_yticks(real_split_axis_ticks)
     _add_crit_line(ax_real_split)
-    ax_real_split.text(
-        -0.2, 1.05, "C", transform=ax_real_split.transAxes,
-        fontsize=LABELS_FONT_SIZE * 1.4, fontweight="bold", va="top",
+    add_panel_letter(
+        ax_real_split, "c",
+        x=-0.2, y=1.05, offset_mm=False,
+        fontsize=LABELS_FONT_SIZE * 1.4,
     )
 
     # x-axis tick formatting

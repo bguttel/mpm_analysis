@@ -144,7 +144,8 @@ class MPMStep(AnalysisStep):
                 ax = plot_svd_singular_values(
                     np.array(lams_v), list(svs_v),
                     n_sv=self.n_sv,
-                    title=f"MPM Hankel SVD — model order calibration (order={self.order})",
+                    title=(f"MPM Hankel SVD — {obs_key} "
+                           f"(model order calibration, order={self.order})"),
                 )
                 fig = ax.get_figure()
                 fig.tight_layout()

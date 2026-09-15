@@ -46,8 +46,9 @@ def save_figure_pdf_svg(
     output_dir: str | Path,
     *,
     dpi: int = 600,
+    png: bool = False,
 ) -> tuple[Path, Path]:
-    """Save a matplotlib figure as both PDF and SVG.
+    """Save a matplotlib figure as PDF and SVG (optionally also PNG).
 
     Parameters
     ----------
@@ -58,12 +59,15 @@ def save_figure_pdf_svg(
     output_dir:
         Directory to write files into (created if it does not exist).
     dpi:
-        Resolution for rasterised elements in the PDF.
+        Resolution for rasterised elements in the PDF, and of the PNG.
+    png:
+        Also write ``<stem>.png`` at ``dpi`` -- for paper figures, where the
+        vector pair is the deliverable and the PNG is the preview.
 
     Returns
     -------
     (pdf_path, svg_path)
-        Absolute ``Path`` objects for the saved files.
+        Absolute ``Path`` objects for the saved vector files.
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -73,6 +77,11 @@ def save_figure_pdf_svg(
 
     fig.savefig(win_long_path(pdf_path), format="pdf", dpi=dpi, bbox_inches="tight")
     fig.savefig(win_long_path(svg_path), format="svg", bbox_inches="tight")
-
-    print(f"Figure saved:\n  PDF: {pdf_path}\n  SVG: {svg_path}")
+    msg = f"Figure saved:\n  PDF: {pdf_path}\n  SVG: {svg_path}"
+    if png:
+        png_path = out / f"{stem}.png"
+        fig.savefig(win_long_path(png_path), format="png", dpi=dpi,
+                    bbox_inches="tight")
+        msg += f"\n  PNG: {png_path}"
+    print(msg)
     return pdf_path, svg_path

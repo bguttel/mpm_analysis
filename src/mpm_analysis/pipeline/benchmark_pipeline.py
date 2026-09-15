@@ -122,6 +122,8 @@ class BenchmarkPipeline:
         preset: str | None = None,
         plot: bool = False,
         fit_critical_point: bool = True,
+        soft_bounds: bool = False,
+        lambda_c_bounds: tuple[float, float] = (1.0, 1.5),
     ) -> "BenchmarkResult | BenchmarkPolesResult":
         """Run ``n_trials`` noisy analyses and compute bias/variance.
 
@@ -141,6 +143,11 @@ class BenchmarkPipeline:
             a ``BenchmarkResult``.  If ``False``, skip the fit and return a
             ``BenchmarkPolesResult`` with per-trial ``PolesResult`` objects so
             you can inspect the raw pole distributions directly.
+        soft_bounds, lambda_c_bounds:
+            Passed to ``CriticalPointPipeline.fit()``.  With the default
+            hard-box mode a ``b_guess`` of exactly 0 makes the b-bounds
+            degenerate and every fit fails — use ``soft_bounds=True`` unless
+            you have calibrated a/b guesses.
 
         Returns
         -------
@@ -184,6 +191,8 @@ class BenchmarkPipeline:
                     lambda_c_guess=lambda_c_guess,
                     a_guess=a_guess,
                     b_guess=b_guess,
+                    soft_bounds=soft_bounds,
+                    lambda_c_bounds=lambda_c_bounds,
                 )
                 true_lambda_c = clean_fit.lambda_c
                 print(f"  Ground-truth lam_c (from clean data): {true_lambda_c:.4f}")
@@ -208,6 +217,8 @@ class BenchmarkPipeline:
                     lambda_c_guess=lambda_c_guess or true_lambda_c,
                     a_guess=a_guess,
                     b_guess=b_guess,
+                    soft_bounds=soft_bounds,
+                    lambda_c_bounds=lambda_c_bounds,
                 )
                 extracted_lambda_cs.append(fit.lambda_c)
                 if first_trial_info is None:
@@ -285,6 +296,8 @@ class BenchmarkPipeline:
         b_guess: float = 0.0,
         plot: bool = False,
         param_label: str = "noise",
+        soft_bounds: bool = False,
+        lambda_c_bounds: tuple[float, float] = (1.0, 1.5),
     ) -> list[BenchmarkResult]:
         """Run the benchmark for a range of noise levels.
 
@@ -322,6 +335,8 @@ class BenchmarkPipeline:
                 a_guess=a_guess,
                 b_guess=b_guess,
                 plot=False,  # defer plotting until the sweep finishes
+                soft_bounds=soft_bounds,
+                lambda_c_bounds=lambda_c_bounds,
             )
             all_results.append(bench)
             info = getattr(self, "_last_trial_info", None)

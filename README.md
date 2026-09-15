@@ -227,6 +227,23 @@ loader = PostSelectedLoader()
 records = loader.load(folder, observables=["survival"])
 ```
 
+Two additional observables load the **conditioned raw-record survivals** that
+`run_files/raw_data_tests/run_conditional_p0.py` writes back into the scan
+JSONs (p0 conditioned on the preceding segment's outcome):
+
+```python
+records = loader.load(folder, observables=["S_prev_click", "S_prev_noclick"])
+# <- data.p_0_t_array_prev_click / data.p_0_t_array_prev_noclick;
+#    data.p_0_t_conditional_meta records the click rule (condition_on) and
+#    the per-point class counts.  Fit from run.py by setting
+#    OBSERVABLES = ["S_prev_click"] (etc.).  The data bootstrap resamples
+#    these channels binomially on their own per-point class counts, so any
+#    UNCERTAINTY_SOURCE works.
+```
+
+Files that never ran the write-back lack the keys; the loader warns and
+skips the observable.
+
 ### Adding a new observable to an existing loader
 
 ```python
@@ -294,6 +311,65 @@ out = KSpacePipeline().run(
 
 Full schema, compression algorithm, and the re-compression recipe are in
 **[docs/compressed_click_record.md](docs/compressed_click_record.md)**.
+
+### Segmented click records (`click_record_with_post_selected_tomography`)
+
+The scan-10 NPZs keep the shot-resolved fast-measurement record in
+*segments*: every point of the 60-point time axis is measured by its own run —
+segment `i` (`i = 1…59`) evolves till `t_i = i·dt` and records `i` bins,
+concatenated in ascending order.  `ClickRecordNpzLoader` detects the 3-D
+`assigned_states` layout automatically:
+
+```python
+from mpm_analysis.io.experimental import ClickRecordNpzLoader
+
+loader = ClickRecordNpzLoader()
+for rec in loader.iter_records(folder):   # one ~300 MB record at a time
+    rec.trajectories        # bool (180000, 1770): reps x settings flattened
+                            # into rows (row = rep*n_axes + axis), segments
+                            # concatenated along the columns
+    rec.segment_lengths     # [1, 2, ..., 59]
+    rec.segment(i)          # (180000, i+1) view of stored segment i
+```
+
+These trajectories are the thresholded bright/dark assignments **verbatim** —
+a bright bin is itself the click in this scan's `no_clicks_count` convention,
+so no falling-edge conversion is applied (unlike the flat
+`click_record_repeated` telegraph records, which the same loader still
+converts to falling-edge clicks).
+
+### Raw-data bias tests (`run_files/raw_data_tests/`)
+
+`run_conditional_p0.py` (IDE toggle block, same style as `run.py`) assembles
+the raw `p_0(t)` **conditioned on whether the preceding segment clicked** (and
+the opposite), prints and saves the per-λ percentage breakdown of the two
+classes, and runs a matrix pencil on each conditional curve (plus the
+unconditional baseline on the same time window).  It targets two raw-data
+biases that push in opposite directions:
+
+* **initialisation bias** — a failing π-pulse leaves the wrong initial state,
+  ending dark more often → extra clicks at segment start;
+* **Schmitt-trigger carry-over** — the hysteresis filter is seeded by the
+  preceding segment's *last* detector outcome (`CONDITION_ON = "last_bin"`
+  probes exactly this mechanism; `"any_click"` is the scan's own click rule).
+
+Outputs — breakdown CSV, stacked conditional-curves NPZ, figures
+(conditional `p_0(t)` panels with the PS-generator theory overlay, breakdown
+vs t and vs λ, per-λ conditional click-probability differences at the first
+bins, per-condition MPM spectra, strand-wise decay comparison), interactive
+p₀ and click-rate (−dp₀/dt) sliders, and one standard analysis JSON per
+condition — go to `run_files/raw_data_tests/output/`.
+
+With `WRITE_JSON_ARRAYS = True` (default) the run also writes both
+conditional curves **into the scan JSONs themselves** —
+`data.p_0_t_array_prev_click`, `data.p_0_t_array_prev_noclick` and
+`data.p_0_t_conditional_meta` (click rule + per-point class counts),
+inserted right after `p_0_t_array` with everything else preserved
+byte-for-byte (same mechanism as the `p_0_t_array_corrected` precedent;
+re-runs replace the three keys).  After that, the ordinary `run.py` fits
+them directly: `OBSERVABLES = ["S_prev_click"]` / `["S_prev_noclick"]` with
+the `post_selected` data mode (use a non-data uncertainty source — see the
+loader section above).
 
 ### Scan number
 
@@ -400,21 +476,128 @@ Re(Δe₁₂) = a·√|λ−λ_c| + b·(λ−λ_c)^1.5   (λ > λ_c, real splitt
 
 ---
 
-## Ksi crossing-point detection
+## The two transitions: state freezing (ksi = 0) and the exceptional point (Delta = 0)
+
+`ksi = (2*Re(e3) - Re(e2)) / (Re(e2) - e3)` and the pair discriminant
+`Delta = c1**2 - 4*c0` mark **different** transitions — on the post-selected
+scan they sit ~0.14 apart in lambda.  Never label the ksi crossing as the EP.
 
 ```python
-from mpm_analysis.analysis.ksi_crossing import KsiCrossingPipeline
-from mpm_analysis.plotting.ksi_plot import plot_ksi_curve
+from mpm_analysis.analysis.ksi_crossing import (
+    KsiCrossingPipeline, discriminant_crossing_samples, linfit_zero_crossing,
+)
+from mpm_analysis.plotting.ksi_plot import plot_ksi_curve, plot_discriminant_curve
 
-ksi_pipe = KsiCrossingPipeline.from_result(result, lambda_max=1.55)
-ksi_result = ksi_pipe.run()
-print(f"EP from ksi: lambda = {ksi_result.lambda_ep:.4f}")
+# --- state freezing: the zero of ksi ---
+ksi_result = KsiCrossingPipeline.from_result(result, lambda_max=1.55).run()
+print(f"state freezing: lambda(ksi=0) = {ksi_result.lambda_ksi_zero:.4f}")
+plot_ksi_curve(ksi_result)
 
-import matplotlib.pyplot as plt
-fig, ax = plt.subplots()
-plot_ksi_curve(ksi_result, ax=ax)
-plt.show()
+# --- exceptional point: the zero of the discriminant ---
+# The line fit is redone inside every bootstrap realization; the 16/84 spread
+# of those per-realization fits is the error bar.
+raw = result.poles.raw_samples
+cross, d_med, d_lo, d_hi = discriminant_crossing_samples(
+    raw, lambda_max=1.55, method="linfit", half_width=0.15)
+q16, q50, q84 = np.nanpercentile(cross, [16, 50, 84])
+lam_ep, fit = linfit_zero_crossing(raw.lambda_values, d_med,
+                                   half_width=0.15, return_fit=True)
+print(f"exceptional point: lambda_EP = {lam_ep:.4f} +/- {(q84 - q16) / 2:.4f}")
+plot_discriminant_curve(raw.lambda_values, d_med, fit=fit, lambda_ep=lam_ep,
+                        crossing_quantiles=(q16, q50, q84),
+                        delta_lower=d_lo, delta_upper=d_hi)
 ```
+
+`run_files/run.py` does both in one task (`RUN_TRANSITIONS`), printing each
+value with its bootstrap error and saving both figures.
+
+---
+
+## Detector dead-time compression sweep
+
+Step-by-step walkthrough of the whole pipeline (inputs, remaps, both fit
+routes, bootstrap, theory comparison, outputs, caveats):
+**[docs/dead_time_sweep.md](docs/dead_time_sweep.md)**.
+
+While the system occupies |B> the fast readout clicks and the dynamics of
+interest is frozen — the detector is *dead*.  The ens_avg scans store the
+ensemble |B> occupation as `data.click_probability` (the fraction of shots
+whose fast readout at that bin returned bright; loaded as the observable
+`"click_probability"`).  The sweep tests whether removing that dead time
+moves the extracted transition by remapping **only the time axis** and
+refitting the same modal form — the measured y-data are never modified:
+
+| `remap`        | axis                                  | note |
+|----------------|---------------------------------------|------|
+| `"pointwise"`  | `t' = t·[1 − c·p_click(t)]`           | as specified; a jump `Δp` between bins `k`, `k+1` folds the axis once `c·(p + k·Δp) > 1`, so noisy late bins fold first — such traces are **truncated at the first fold** and the cut is printed |
+| `"cumulative"` | `t' = t − c·∫₀ᵗ p_click`              | accumulated dead time; slope `1 − c·p > 0`, never folds |
+
+`c = 0` is the raw data, `c = 1` full compression.  Two fitting routes:
+
+* **direct** — the remapped axis is non-uniform, so instead of the pencil
+  the same complex-exponential LSQ (`RefineStep` → `refine_poles`, conjugate
+  pairs / real poles, decaying) is fitted directly on `t'`.  `c = 0` is
+  seeded from the raw-data MPM poles (or from this run's MPM result when it
+  describes the same data); every next `c` starts from the previous fit.
+* **regrid_mpm** (fallback) — every remapped trace is interpolated back onto
+  a uniform grid of the raw spacing (320 ns) and the ordinary `MPMStep` (+ the
+  same `RefineStep`) runs on it; reported next to the direct route wherever
+  both converge, Hungarian-matched to the direct branches.
+
+From every fit the decay rates / frequencies and both transitions are read
+off exactly as `run_transitions` does — the EP as the straight-line zero of
+`Delta = c1² − 4c0` and the state-freezing point as the zero of `ksi`.
+`DT_N_BOOTSTRAP > 0` adds the data bootstrap per `c` with **refine-only
+draws** (`BootstrapStep(mode="data", pencil=False)`: every draw starts from
+the clean poles, the pencil never sees the non-uniform axis) and stores the
+per-realization EP quantiles.
+
+```python
+from mpm_analysis.io.experimental import EnsembleAverageLoader
+from mpm_analysis.pipeline import DeadTimeSweepPipeline
+from mpm_analysis.plotting.dead_time_plots import (
+    plot_compression_traces, plot_poles_vs_compression, plot_transition_vs_compression,
+)
+
+records = EnsembleAverageLoader().load(folder, observables=["D", "click_probability"])
+pipe = DeadTimeSweepPipeline(records, [0, 0.25, 0.5, 0.75, 1.0], order=3,
+                             observable_keys=["D"], remap="pointwise",
+                             discriminant_half_width=0.15, fallback=True, n_boot=0)
+sweep = pipe.run()                 # DeadTimeSweepResult: .direct / .fallback tracks
+pipe.save(output_dir)              # JSON (+ .csv summary, one row per c)
+theory = dict(tau_B=4.0, T1=15.0, T2=21.0)        # µs; Omega from the data
+plot_compression_traces(records, sweep, c_values=(0, 0.2, 0.4))   # data + fits
+s1 = plot_traces_compression_slider(records, sweep)   # same rows, slider over c
+plot_poles_at_compression(sweep, 0.2, theory_params=theory)   # 2-panel spectrum at one c
+s2 = plot_poles_compression_slider(sweep, theory_params=theory)   # slider over c
+plot_poles_panel_grid(sweep, theory_params=theory)   # slider frames as a static grid
+export_poles_slider_html(sweep, "poles_slider.html", theory_params=theory)   # standalone HTML
+plot_transition_vs_compression(sweep, theory_params=theory)   # Delta(λ) per c, λ_EP(c)
+sweep.to_analysis_result(ic)               # one c as a ZenoAnalysisResult
+```
+
+**Theory comparison.**  `theory_params` selects the 4×4 Liouvillian of
+`simulation/liouvillian_spectrum.py` at `k = 0` (the ensemble-average
+generator) with the compression mapped onto its bright dwell time as
+`tau_B_eff = (1 − c)·tau_B` — `c = tau_B_comp / tau_B`, `tau_B_comp = c·tau_B`
+being the dwell time compressed away (`tau_B_effective`).
+`theory_transition` locates the theory's exceptional point (coalescence of
+the oscillating eigenvalue pair) and `theory_transition_vs_compression` gives
+the line drawn in the transition figure; the per-c pole figures overlay the
+theory eigenvalues and mark both the data's and the theory's `λ_EP`.  For
+scan-50 (`Ω = 0.628 rad/µs`, `T1 = 15`, `T2 = 21`, `tau_B = 4 µs`) the theory
+EP sits at 1.30 for the raw data and climbs towards the ideal `λ = 2` as the
+dead time is removed.
+
+In `run.py` set `RUN_DEAD_TIME_SWEEP = True` (block `DT_*`: data mode,
+fitted keys, remap, coefficients, fallback, bootstrap size, representative
+`c`/λ, `DT_THEORY`).  Results and the figures — `dead_time_traces`, one
+`dead_time_poles_c<c>` spectrum per representative `c` (all poles per panel,
+the same layout as the MPM `spectrum` figure), `dead_time_transition` — go to
+`OUTPUT_DIR`; with `SHOW_PLOTS` two sliders over `c` open as well (traces and
+spectrum; run from a terminal or a GUI backend — an inline backend renders
+them as static images).  `io.analysis_json.load_dead_time_sweep` reads a
+saved sweep back.
 
 ---
 

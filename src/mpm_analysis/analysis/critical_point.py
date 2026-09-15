@@ -261,6 +261,7 @@ def fit_sqrt_per_realization(
     window_right: int = 15,
     omega_s: float = 1.0,
     fit_real_part: bool = True,
+    max_nfev: int = 20_000,
 ) -> np.ndarray:
     """Fit the sqrt model separately to every bootstrap realization.
 
@@ -282,6 +283,11 @@ def fit_sqrt_per_realization(
         Normalisation factor (divide splittings by this before fitting).
     fit_real_part:
         Include the real splitting in the joint fit.
+    max_nfev:
+        Per-realization ``curve_fit`` budget.  Low-SNR realizations can burn
+        the full budget without converging (~1 s each), so a large value
+        times n_boot can stall the whole analysis for many minutes — lower
+        it (e.g. 2000) when n_boot is large.
 
     Returns
     -------
@@ -346,7 +352,7 @@ def fit_sqrt_per_realization(
             popt, _ = curve_fit(
                 model, lam_w, y_fit,
                 p0=p0, sigma=sigma_fit,
-                absolute_sigma=False, bounds=bounds, max_nfev=20_000,
+                absolute_sigma=False, bounds=bounds, max_nfev=max_nfev,
             )
             lam_c_samples[b] = popt[2]
         except Exception:

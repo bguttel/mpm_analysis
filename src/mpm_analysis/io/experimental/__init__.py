@@ -10,11 +10,12 @@ Usage
     records = PostSelectedLoader().load(folder, observables=["survival", "Z"])
     records = EnsembleAverageLoader().load(folder, observables=["survival"])
 """
-from mpm_analysis.io.experimental.base import ExperimentalLoader
+from mpm_analysis.io.experimental.base import ExperimentalLoader, HMMTableMismatch
 from mpm_analysis.io.experimental.survival_probability import (
     ParityLoader,
     PostSelectedLoader,
     EnsembleAverageLoader,
+    discover_hmm_table,
 )
 from mpm_analysis.io.experimental.click_record_npz import (
     ClickRecordNpzLoader,
@@ -36,6 +37,8 @@ __all__ = [
     "PostSelectedLoader",
     "EnsembleAverageLoader",
     "ParityLoader",
+    "discover_hmm_table",
+    "HMMTableMismatch",
     "ClickRecordNpzLoader",
     "ClickRecordData",
     "CompressedClickBuilder",

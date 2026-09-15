@@ -42,6 +42,11 @@ class BootstrapStep(AnalysisStep):
     n_jobs:
         Parallel workers for ``mode="data"`` (process pool across lambdas).
         ``-1`` → all cores.
+    pencil:
+        ``mode="data"`` only.  ``False`` makes every draw a refinement from
+        the clean poles without rerunning the pencil — required on a
+        non-uniform time axis (see ``run_data_bootstrap``).  Needs a
+        ``RefineStep`` before this step.
     """
 
     def __init__(
@@ -51,14 +56,21 @@ class BootstrapStep(AnalysisStep):
         seed: int | None = None,
         mode: str = "residual",
         n_jobs: int = -1,
+        pencil: bool = True,
     ) -> None:
         if mode not in ("data", "residual", "parametric"):
             raise ValueError(f"BootstrapStep: unknown mode '{mode}'.")
+        if not pencil and mode != "data":
+            raise ValueError(
+                "BootstrapStep: pencil=False (refine-only draws) is only "
+                "available in mode='data'."
+            )
         self.n_boot = n_boot
         self.order = order
         self.seed = seed
         self.mode = mode
         self.n_jobs = n_jobs
+        self.pencil = pencil
 
     def process(
         self,
@@ -100,6 +112,7 @@ class BootstrapStep(AnalysisStep):
                 clean_poles=state.get("poles_raw"),
                 refine_settings=state.get("refine_settings"),
                 n_jobs=self.n_jobs,
+                pencil=self.pencil,
             )
         else:
             # Pass the per-slice pencil parameters, not a single representative:
@@ -186,4 +199,4 @@ class BootstrapStep(AnalysisStep):
 
     def description(self) -> str:
         return (f"BootstrapStep(n_boot={self.n_boot}, seed={self.seed}, "
-                f"mode={self.mode}, n_jobs={self.n_jobs})")
+                f"mode={self.mode}, n_jobs={self.n_jobs}, pencil={self.pencil})")

@@ -243,6 +243,8 @@ class PostSelectedDynamicsSimulator:
                         "T_D": self.T_D,
                         "T1": self.T1,
                         "omega_S": self.omega_S,
+                        # key the analysis pipeline reads for normalization
+                        "omega_DG": self.omega_S,
                     },
                 )
             )

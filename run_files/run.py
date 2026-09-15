@@ -1,193 +1,322 @@
+"""MPM analysis driver for the Zeno paper transitions.
+
+How to run
+----------
+    python run_files/run.py
+
+Everything is configured by the ``if (RUN_... := True/False):`` toggles
+below — flip the boolean in the ``if`` line to switch a task on or off.  The
+settings a task needs live inside its own clause, so a disabled clause is
+simply skipped and nothing else has to change.
+
+Two independent entry points, one per paper transition:
+
+    RUN_FIRST_TRANSITION   post-selected survival  (scan 10)  → first transition
+    RUN_THIRD_TRANSITION   ensemble-average  D     (scan 50)  → third transition
+
+Inside each, the nested toggles select what is done with the loaded data:
+
+    ..._MPM                 matrix-pencil poles + bootstrap error bars   (required)
+        ..._TRANSITIONS     state-freezing (ksi = 0) and exceptional point (Delta = 0)
+        ..._CRITICAL_POINT  sqrt fit of the splitting → lambda_c
+        ..._SLIDER          interactive per-λ trace browser with the fitted poles
+        ..._FIGURE          paper figure built from this run's result
+        THIRD_EXPORT        (third transition only) write the result JSON + per-λ
+                            fit curves that run_files/make_third_transition_figure.py
+                            reads, into a fresh fitting_results_<stamp> Dropbox folder
+
+The stand-alone checks at the end (simulation test, benchmark, Liouvillian
+spectrum) need no experimental data.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 from mpm_analysis.utils.lab_paths import get_lab_path
 
 # ===========================================================================
-# GLOBAL SETTINGS
+# GLOBAL SETTINGS  (apply to every task)
 # ===========================================================================
 
-DEBUG = False          # True → small n_boot, few files, no saving
-ORDER = 3              # MPM model order
-N_LAMBDA_TEST = None   # set to e.g. 10 to load only first 10 files (debug)
-LAMBDA_RANGE = (0,1.4)    # e.g. (0.1, 1.6) — restrict lambda window
-SEED: int | None = None  # RNG seed (all uncertainty modes); None → truly random (OS entropy)
-T_MAX = None            # max time to load from experimental records (µs), default is None
-
-SHOW_PLOTS  = True     # plt.show() after each task
-SAVE_FIGURES = True # save figures as png into OUTPUT_DIR
-SAVE_FULL_ANALYSIS = True  # write raw pole samples + refine params/cov + ksi into the output JSON
-
-if DEBUG:
-    N_LAMBDA_TEST = 10
+DEBUG = False               # True → few files, small bootstrap, nothing saved
+SHOW_PLOTS = True           # plt.show() at the end of the run
+SAVE_FIGURES = False        # png into OUTPUT_DIR (paper figures: PDF+SVG+PNG into PAPER_FIGURES_DIR)
+SAVE_FULL_ANALYSIS = False  # also write raw pole samples + refine params/cov into the result JSON
+SEED: int | None = None     # RNG seed for every bootstrap; None → OS entropy
+N_JOBS = -1                 # parallel workers for the data bootstrap (-1 → all cores)
+MAX_FILES = 10 if DEBUG else None   # load only the first N λ files (debugging)
 
 # ===========================================================================
 # PATHS
 # ===========================================================================
-# Dropbox root is auto-detected from the current hostname — see
-# utils/lab_paths.py.  Add your machine there if you get a "hostname not
-# recognised" ValueError.
+# Dropbox root is auto-detected from the hostname (utils/lab_paths.py); add
+# your machine there if you get a "hostname not recognised" ValueError.
 
 _ZT = r"Common\QuantumZeno\Paper\zeno_paper_data"
+POST_SELECTED_DROPBOX = Path(get_lab_path(_ZT + r"\scan_experiment_results_10"))
+ENS_AVG_DROPBOX = Path(get_lab_path(_ZT + r"\scan_experiment_results_50"))
+PARITY_FOLDER = Path(get_lab_path(
+    _ZT + r"\click_record_repeated\Omega_BG0_scan\scan_experiment_results_12"
+))
+# Data folders actually loaded.  Local mirrors hold the same files, BUT the
+# ens_avg HMM λ table (scan-10's misfiled results.csv) is only discovered
+# inside the Dropbox tree — from the local mirror the ens_avg λ silently
+# falls back to the stored JSON value (~11 % lower), and would no longer
+# match what make_third_transition_figure.py loads for panel A.
+POST_SELECTED_FOLDER = Path(r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\old data\scan_experiment_results_10")
+ENS_AVG_FOLDER = ENS_AVG_DROPBOX
+# ENS_AVG_FOLDER = Path(r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\old_survival_data\scan_experiment_results_50")
 
-# ---- Ensemble-average scan ----
-ENS_AVG_FOLDER = get_lab_path(
-    _ZT+
-    r"\scan_experiment_results_50",
-)
+# λ axis: the loader finds the HMM calibration table that belongs to the
+# folder (matched on the full run id) and otherwise uses the JSON lambda,
+# which for the post-selected scan already is the HMM value.  The run prints
+# which one it used.   "auto" | False (force the JSON lambda) | Path(table)
+LAMBDA_SOURCE = "auto"
 
-# ---- Post-selected scan + CSV for HMM lambda scale ----
-_PS = r"Common\QuantumZeno\Paper\zeno_paper_data\scan_experiment_results_10"
-
-_PARITY = _ZT + r"\click_record_repeated\Omega_BG0_scan\scan_experiment_results_12"
-
-# POST_SELECTED_FOLDER = get_lab_path(_PS)
-POST_SELECTED_FOLDER = r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\old data\scan_experiment_results_10"
-ENS_AVG_FOLDER = r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\old_survival_data\scan_experiment_results_50"
-PARITY_FOLDER = get_lab_path(_PARITY)
-ENSEMBLE_AVERAGE_CSV = get_lab_path(_PS, "results.csv")
-ENSEMBLE_AVERAGE_CSV = None
-# HMM results CSV; set to None to use lambda_zeno_estimation from JSON
-
-# ---- HMM lambda correction (post-selected) ----
-# results.csv holds Gamma_up_3_states_hmm (= alpha) per OBG0 drive setting;
-# the loader converts it to lambda = alpha / (2 * Omega_DG).  Only the
-# scan_experiment_results_10 folder ships one, so auto-detection applies the
-# correction to that scan and to nothing else.
-#   None          -> auto-detect "results.csv" inside POST_SELECTED_FOLDER
-#   Path(...)     -> force a specific CSV
-#   False         -> disable, always use lambda_zeno_estimation from the JSON
-POST_SELECTED_CSV = r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\old data\scan_experiment_results_10\results.csv"
-POST_SELECTED_CSV = False
-# ---- Output directory ----
 OUTPUT_DIR = Path(__file__).parent.parent / "mpm_analysis_output"
+PAPER_FIGURES_DIR = Path(__file__).parent.parent / "paper_figures"
+PAPER_FIGURES_DPI = 600
 
 # ===========================================================================
 # TASKS
 # ===========================================================================
+# Every enabled transition clause appends its settings to JOBS; main runs
+# them in order.  Each job is a plain dict — the keys are documented once,
+# in the FIRST transition clause; the THIRD clause uses the same keys.
 
-# ---- MPM + bootstrap (unified for all data modes) ----
-RUN_MPM     = True
-DATA_MODE   = "ens_avg"   # "ens_avg" | "post_selected" | "parity"
-OBSERVABLES = ["D","G"]  # keys to load from the records (must be present in the data)
+JOBS: list[dict] = []
 
+# ---------------------------------------------------------------------------
+# FIRST TRANSITION — post-selected survival probability (scan 10)
+# ---------------------------------------------------------------------------
+if (RUN_FIRST_TRANSITION := False):
+    FIRST = dict(
+        label="first_transition",
+        data_mode="post_selected",      # "post_selected" | "ens_avg" | "parity"  (loader + folder)
+        observables=["S_pooled"],       # keys to load; 1 key → classic MPM, >1 → joint MPM
+                                        #   (common poles, per-observable amplitudes).
+                                        #   post_selected: "S" (stored p_0_t_array),
+                                        #   "S_pooled" (segment-pooled rebuild from the raw
+                                        #   NPZ, multinomial data bootstrap — written by
+                                        #   run_files/raw_data_tests/run_pooled_p0.py),
+                                        #   "S_prev_click" / "S_prev_noclick", X/Y/Z …
+        order=3,                        # MPM model order (3 for both scans)
+        lambda_range=(0, 1.65),         # λ window to load
+        t_max=None,                     # µs; None → full record
+        drop_first_point=False,         # drop the by-construction t=0 anchor (S=1) from the
+                                        #   data AND the bootstrap statistics.  The anchor is
+                                        #   inconsistent with the first-window loss / false
+                                        #   clicks (order-3 EP 1.01 vs 1.15 with it, but the EP
+                                        #   is poorly resolved without it — see
+                                        #   mpm_benchmarks/noise_robustness/v3_transient.py).
+    )
 
-# OBSERVABLES = ["SX","X"]      # 1 key → classic MPM; >1 keys → joint MPM
-                                # (common poles, per-observable amplitudes)
-PLOT_SVD    = True             # SVD-vs-λ model-order calibration figure
+    if (FIRST_MPM := True):
+        FIRST["mpm"] = dict(
+            uncertainty_source="data_bootstrap",
+            #   "data_bootstrap"     resample the raw measurement statistics, rerun the
+            #                        pencil (+ refinement) per draw — the reported error bars
+            #   "fit_covariance"     fast Monte-Carlo propagation of the LSQ covariance
+            #   "residual_bootstrap" legacy residual resampling
+            n_boot=100,                 # bootstrap draws / covariance samples
+            refine_poles=False,         # weighted complex-exponential LSQ after the pencil
+            conjugate_pairs=True,       # constrain the refinement to conjugate pairs
+            plot_svd=True,              # SVD-vs-λ model-order calibration figure
+        )
 
-# ---- Pole refinement / uncertainty source ----
-REFINE_POLES       = False    # weighted complex-exponential LSQ smoothing after MPM
-CONJUGATE_PAIRS    = None    # None → auto: True for "post_selected"/"ens_avg", False otherwise
-UNCERTAINTY_SOURCE = "residual_bootstrap"
-# "data_bootstrap"     — DEFAULT: resample the raw measurement statistics
-#                        (multinomial D/G/B/error for ens_avg, binomial
-#                        survival/X/Z for post_selected), rerun MPM + LSQ
-#                        refinement per draw.  Final reported error bars.
-# "fit_covariance"     — fast approximation: Monte-Carlo propagation of the
-#                        LSQ parameter covariance (NOT a bootstrap).
-# "residual_bootstrap" — legacy residual resampling.
-# One choice for the whole run: spectrum errorbars AND transition crossings.
-N_BOOTSTRAP   = 100   # data/residual bootstrap realizations
-N_COV_SAMPLES = 100    # Monte-Carlo covariance-propagation samples
-N_JOBS        = -1      # parallel workers for the data bootstrap (-1 → all cores)
-if DEBUG:
-    N_BOOTSTRAP = 50
+        # The two transitions on the pole strands — do not conflate them:
+        #   state freezing : zero of ksi = (2·Re(e3) − Re(e2)) / (Re(e2) − Re(e3))
+        #   exceptional pt : zero of the pair discriminant Delta = c1² − 4·c0
+        # Delta is linear in λ through a sqrt EP, so a line fitted over
+        # ±half_width around the sign change ("linfit") uses every point in
+        # the window; "first" takes the bracketing pair (reads ~0.1 low).
+        # Both are refitted inside every bootstrap draw → 16/84 error bar.
+        if (FIRST_TRANSITIONS := True):
+            FIRST["transitions"] = dict(
+                method="linfit",        # "linfit" (recommended) | "first"
+                half_width=0.15,        # λ half-window of the line fit
+                lambda_max=None,        # e.g. 1.55 to match the critical-point window
+                plot_ksi=False,         # ksi(λ) with error bars + the ksi = 0 line
+                plot_discriminant=True, # Delta(λ) with error bars + the fitted line
+            )
 
-# ---- Ksi zero crossing (2·Re(e3) − Re(e2)) + discriminant crossing ----
-RUN_KSI_CROSSING = False
-KSI_LAMBDA_MAX   = None      # e.g. 1.55 to match the critical-point window
+        # sqrt fit of the pole splitting: only λ_c is bounded, a/b are free.
+        # λ_c is fitted on the central values (aggregate) and, with
+        # per_realization, separately in every bootstrap draw (16/50/84).
+        if (FIRST_CRITICAL_POINT := True):
+            FIRST["critical_point"] = dict(
+                lambda_c_guess=1.0,
+                lambda_c_bounds=(0.85, 1.15),   # guess ± 0.15
+                lambda_max=1.3,                 # exclude λ above this from the fit
+                per_realization=True,
+            )
 
-# ---- Interactive per-λ trace browser ----
-RUN_SLIDER_PLOT  = True
-PLOT_OBSERVABLES = OBSERVABLES          # which keys the slider shows
-PLOT_SCALES      = {"survival": "log"}  # key → "log"/"linear"; unlisted → linear
-PLOT_TAKE_ABS    = False                # plot/fit |signal| (e.g. for parity)
+        if (FIRST_SLIDER := False):
+            FIRST["slider"] = dict(
+                scales={"S": "log", "S_pooled": "log"},   # key → "log"/"linear"
+                take_abs=False,         # plot/fit |signal| (e.g. for parity)
+            )
 
-# ---- Other tasks ----
-RUN_CRITICAL_POINT       = True  # Fit sqrt model (fresh MPM result or existing JSON)
-RUN_SIMULATION_TEST      = False   # Small synthetic simulation (no real data needed)
-RUN_BENCHMARK            = False  # Robustness benchmark with noise injection
-RUN_LIOUVILLIAN_SPECTRUM = False  # 4×4 Liouvillian eigenvalues vs λ at k=π
+        # Paper figure from this run's result.
+        #   "discriminant" → 2 panels: A spectrum, B Delta(λ) line fit
+        #   "sqrt"         → 3 panels: A spectrum, B/C splittings + sqrt fit
+        #                    (needs the critical point above)
+        if (FIRST_FIGURE := False):
+            FIRST["figure"] = dict(
+                layout="discriminant",
+                lambda_max=1.5,                     # λ cutoff of every panel
+                fit_validity=1.2,
+                real_axis_scale="log",
+                real_axis_ticks=None,
+                real_split_axis_ticks=[0.0, 1.0, 2.0, 3.0],
+            )
 
-# For RUN_CRITICAL_POINT: path to a previously saved analysis JSON
-# CRITICAL_POINT_JSON = Path(
-#     r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code"
-#     r"\mpm_analysis_results_ens_avg_scan_experiment_results_50_20260129_225403.json"
-# )
+    JOBS.append(FIRST)
 
-CRITICAL_POINT_JSON = None  # set to None to require a fresh MPM result for critical point fit
-CP_LAMBDA_MAX  = 1.75    # exclude lambda above this for the fit
+# ---------------------------------------------------------------------------
+# THIRD TRANSITION — ensemble-average D population (scan 50)
+# ---------------------------------------------------------------------------
+# Same keys as FIRST.  D alone at order 3: the joint D/G/B/error pencil is a
+# B-dominated truncation bias (mpm_benchmarks/noise_robustness/v3_channelcheck.py).
+if (RUN_THIRD_TRANSITION := True):
+    THIRD = dict(
+        label="third_transition",
+        data_mode="ens_avg",
+        observables=["D"],              # "D" | "G" | "B" | "error", or several for a joint fit
+        order=3,
+        lambda_range=(0, 1.65),
+        t_max=None,
+        drop_first_point=False,         # the t=0 point is an inconsistent anchor here too
+                                        #   (λ₃ 1.13 → 1.03 without it)
+    )
 
-# Soft guess: only λ_c is bounded (CP_LAMBDA_C_BOUNDS), a/b essentially free.
-# CP_SOFT_GUESS=False falls back to the per-mode preset (±10 % hard box).
-CP_SOFT_GUESS      = True
-CP_LAMBDA_C_BOUNDS = (1.0, 1.5)
-CP_LAMBDA_C_GUESS  = 1.25   # p0 for λ_c (always around 1–1.5)
+    if (THIRD_MPM := True):
+        THIRD["mpm"] = dict(
+            uncertainty_source="data_bootstrap",
+            n_boot=1000,
+            refine_poles=False,
+            conjugate_pairs=True,
+            plot_svd=True,
+        )
 
-# Per-realization transition extraction: λ_c fitted separately for every
-# bootstrap realization (16/50/84 from the distribution), IN ADDITION to the
-# aggregate fit from the central values + error bars above.  Both reported.
-CP_PER_REALIZATION = True
+        if (THIRD_TRANSITIONS := True):
+            THIRD["transitions"] = dict(
+                method="linfit",
+                half_width=0.15,
+                lambda_max=None,
+                plot_ksi=False,
+                plot_discriminant=True,
+            )
+
+        if (THIRD_CRITICAL_POINT := True):
+            THIRD["critical_point"] = dict(
+                lambda_c_guess=1.1,
+                lambda_c_bounds=(0.95, 1.25),   # guess ± 0.15
+                lambda_max=1.3,
+                per_realization=True,
+            )
+
+        if (THIRD_SLIDER := False):
+            THIRD["slider"] = dict(
+                scales={},                      # linear axes
+                take_abs=False,
+            )
+
+        if (THIRD_FIGURE := False):
+            THIRD["figure"] = dict(
+                layout="discriminant",
+                lambda_max=1.5,
+                fit_validity=1.3,
+                real_axis_scale="linear",
+                real_axis_ticks=[0.0, 1.0, 2.0],
+                real_split_axis_ticks=[0.0, 0.6, 1.2],
+            )
+
+        # Data files for run_files/make_third_transition_figure.py, written
+        # into a NEW  <parent>/fitting_results_<UTC stamp>/  folder (the old
+        # folders are never touched; the figure script picks the newest):
+        #   mpm_analysis_results_*.json      panel B — this run's result, with
+        #                                    the sqrt fit if THIRD_CRITICAL_POINT ran
+        #   <scan file>_mpm_fit.json         panel A — one per λ: the modal fit
+        #                                    Σ A_k exp(p_k t) of `observable` on a
+        #                                    smooth grid (times_smooth / fit_curve),
+        #                                    poles = this run's, amplitudes re-solved
+        #                                    on that trace; matched by kHz in the name
+        if (THIRD_EXPORT := True):
+            THIRD["export"] = dict(
+                parent=ENS_AVG_DROPBOX,     # where the figure script reads from
+                observable="D",             # trace the fit curve describes — must be
+                                            #   what panel A plots: the loader's
+                                            #   "survival" key = D_probability
+                n_smooth=300,               # points of the smooth time grid
+            )
+
+    JOBS.append(THIRD)
+
+# ---------------------------------------------------------------------------
+# Stand-alone checks (no experimental data, no settings of their own)
+# ---------------------------------------------------------------------------
+if (RUN_SIMULATION_TEST := False):
+    pass    # small synthetic simulation through MPM + bootstrap
+
+if (RUN_BENCHMARK := False):
+    pass    # robustness benchmark with injected shot noise
+
+if (RUN_LIOUVILLIAN_SPECTRUM := False):
+    pass    # 4×4 Liouvillian eigenvalues vs λ at k=π
 
 
 # ===========================================================================
 # IMPORTS
 # ===========================================================================
 
+import json
+import shutil
+from datetime import datetime, timezone
+
 import numpy as np
 import matplotlib.pyplot as plt
 from mpm_analysis.pipeline.mpm_pipeline import MPMPipeline
 from mpm_analysis.pipeline.critical_point_pipeline import CriticalPointPipeline
 from mpm_analysis.pipeline.benchmark_pipeline import BenchmarkPipeline
-from mpm_analysis.analysis.steps import MPMStep, BootstrapStep, MPMRRHAStep, RefineStep
+from mpm_analysis.analysis.steps import MPMStep, BootstrapStep, RefineStep
 from mpm_analysis.analysis.ksi_crossing import (
-    KsiCrossingPipeline, discriminant_crossing_samples,
+    KsiCrossingPipeline, discriminant_crossing_samples, discriminant_from_params,
+    linfit_zero_crossing, find_zero_crossings,
+)
+from mpm_analysis.analysis.matrix_pencil import (
+    pack_pole_params, solve_linear_amplitudes, reconstruct_signal,
 )
 from mpm_analysis.analysis.critical_point import fit_sqrt_per_realization
 from mpm_analysis.data_types.pole_samples import PoleSamples
-from mpm_analysis.plotting.ksi_plot import plot_ksi_curve
+from mpm_analysis.plotting.ksi_plot import plot_ksi_curve, plot_discriminant_curve
 from mpm_analysis.io.analysis_json import (
     augment_json_with_ksi, augment_json_with_transitions,
 )
 from mpm_analysis.simulation.postselected_dynamics import PostSelectedDynamicsSimulator
-from mpm_analysis.simulation.ensemble_average import EnsembleAverageDynamics
 from mpm_analysis.simulation.liouvillian_spectrum import LiouvillianSpectrum
 from mpm_analysis.io.experimental import EnsembleAverageLoader, PostSelectedLoader, ParityLoader
 from mpm_analysis.simulation.noise import ShotNoise
-from mpm_analysis.plotting.exploratory import (
-    plot_eigenvalue_spectrum, plot_time_traces_slider
-)
+from mpm_analysis.plotting.exploratory import plot_spectrum_panels, plot_time_traces_slider
 from mpm_analysis.plotting.paper_figures.appendix_bootstrap import plot_appendix_bootstrap
-from mpm_analysis.analysis.critical_point_guesses import get_guess, list_presets
-from mpm_analysis.io.file_naming import build_figure_filename
+from mpm_analysis.io.file_naming import build_figure_filename, save_result
 
 
 # ===========================================================================
-# PLOT HELPER
+# HELPERS
 # ===========================================================================
 
-# Strong references to interactive widgets (sliders).  Matplotlib holds only
-# weak references to widget callbacks, so anything dropped here stops
-# responding while still being drawn.
+# Strong references to interactive widgets: matplotlib only weak-references
+# slider callbacks, so a dropped slider keeps drawing but stops responding.
 _LIVE_WIDGETS: list = []
 
 
-def _show_and_save(
-    fig,
-    figure_tag: str,
-    *,
-    data_mode: str = "unknown",
-    scan_number: int | None = None,
-) -> None:
-    """Optionally save figure to OUTPUT_DIR and/or show it."""
-    import matplotlib.pyplot as plt
+def _show_and_save(fig, figure_tag: str, *, data_mode: str = "unknown",
+                   scan_number: int | None = None) -> None:
+    """Save the figure as png into OUTPUT_DIR (if enabled) and show it."""
     if SAVE_FIGURES and not DEBUG:
         filename = build_figure_filename(
-            figure_tag=figure_tag,
-            data_mode=data_mode,
-            scan_number=scan_number,
-            extension="png",
+            figure_tag=figure_tag, data_mode=data_mode,
+            scan_number=scan_number, extension="png",
         )
         path = OUTPUT_DIR / filename
         fig.savefig(path, bbox_inches="tight")
@@ -196,151 +325,83 @@ def _show_and_save(
         plt.show(block=False)
 
 
-def _plot_mpm_result(records, result, tag: str) -> None:
-    """Standard 2-panel diagnostic: raw data, decay rates, frequencies."""
-    import numpy as np
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-    fig.suptitle(tag, fontsize=14)
-
-    plot_eigenvalue_spectrum(result, ax=axes[0], mode="decay")
-    axes[0].set_title("Decay rates", fontsize=12)
-    axes[0].tick_params(labelsize=10)
-
-    plot_eigenvalue_spectrum(result, ax=axes[1], mode="frequency")
-    axes[1].set_title("Frequencies", fontsize=12)
-    axes[1].tick_params(labelsize=10)
-
-    for ax in axes:
-        ax.tick_params(labelsize=10)
-        ax.grid(True, alpha=0.3, linewidth=0.5)
-
-    fig.tight_layout()
+def _result_tags(result) -> tuple[str, int | None]:
+    """(data_mode, scan_number) of a result, for figure file names."""
     data_mode = str(result.metadata.get("data_mode",
-                                        result.metadata.get("source_tag", tag)))
+                                        result.metadata.get("source_tag", "unknown")))
     scan_number = result.metadata.get("scan_number")
-    if scan_number is not None:
-        scan_number = int(scan_number)
-    _show_and_save(
-        fig,
-        "spectrum",
-        data_mode=data_mode,
-        scan_number=scan_number,
-    )
+    return data_mode, (int(scan_number) if scan_number is not None else None)
+
+
+def _make_source(data_mode: str):
+    """Resolve a data mode to (loader, folder)."""
+    if data_mode == "ens_avg":
+        return EnsembleAverageLoader(csv_path=LAMBDA_SOURCE), Path(ENS_AVG_FOLDER)
+    if data_mode == "post_selected":
+        return PostSelectedLoader(csv_path=LAMBDA_SOURCE), Path(POST_SELECTED_FOLDER)
+    if data_mode == "parity":
+        return ParityLoader(), Path(PARITY_FOLDER)
+    raise ValueError(f"Unknown data_mode '{data_mode}'; expected "
+                     f"'ens_avg', 'post_selected' or 'parity'.")
+
+
+def _resolve_uncertainty_source(source: str, data_mode: str) -> str:
+    """Validate the uncertainty source and apply per-mode fallbacks."""
+    if source not in ("data_bootstrap", "fit_covariance", "residual_bootstrap"):
+        raise ValueError(f"Unknown uncertainty_source '{source}'.")
+    if source == "data_bootstrap" and data_mode not in ("ens_avg", "post_selected"):
+        print(f"Warning: data bootstrap has no measurement statistics for "
+              f"'{data_mode}' — falling back to residual_bootstrap.")
+        source = "residual_bootstrap"
+    return source
+
+
+def _build_steps(job: dict) -> tuple[list, str]:
+    """Assemble MPM → (Refine) → Bootstrap steps from a job's settings."""
+    mpm = job["mpm"]
+    src = _resolve_uncertainty_source(mpm["uncertainty_source"], job["data_mode"])
+    n_boot = min(mpm["n_boot"], 20) if DEBUG else mpm["n_boot"]
+    steps = [
+        MPMStep(order=job["order"], observable_key=job["observables"],
+                plot_svd=mpm["plot_svd"], n_sv=10, save_dir=OUTPUT_DIR),
+    ]
+    if mpm["refine_poles"] or src == "fit_covariance":
+        # fit_covariance needs the refinement covariance → RefineStep forced on
+        steps.append(RefineStep(observable_key=job["observables"],
+                                conjugate_pairs=mpm["conjugate_pairs"]))
+    mode = {"data_bootstrap": "data", "fit_covariance": "parametric",
+            "residual_bootstrap": "residual"}[src]
+    steps.append(BootstrapStep(n_boot=n_boot, seed=SEED, mode=mode, n_jobs=N_JOBS))
+    return steps, src
 
 
 # ===========================================================================
 # TASKS
 # ===========================================================================
 
-def _resolve_hmm_csv(folder, setting):
-    """Locate the HMM results.csv that rescales lambda for this folder.
-
-    ``setting`` is the config value: ``False`` disables the correction,
-    an explicit path forces one, ``None`` auto-detects ``results.csv`` beside
-    the data.  A CSV without the ``Gamma_up_3_states_hmm`` column is ignored,
-    so a bare ``results_df.csv`` never triggers a bogus rescale.
-    """
-    if setting is False:
-        print("[post_selected] HMM correction disabled, "
-              "using lambda_zeno_estimation from JSON")
-        return None
-    csv_path = Path(setting) if setting else Path(folder) / "results.csv"
-    if not csv_path.exists():
-        print(f"[post_selected] no {csv_path.name} in {Path(folder).name}, "
-              "using lambda_zeno_estimation from JSON")
-        return None
-    import csv as _csv
-    with open(csv_path, newline="") as f:
-        cols = _csv.DictReader(f).fieldnames or []
-    if "Gamma_up_3_states_hmm" not in cols or "filename" not in cols:
-        print(f"[post_selected] {csv_path.name} lacks filename/"
-              "Gamma_up_3_states_hmm — using lambda_zeno_estimation from JSON")
-        return None
-    print(f"[post_selected] HMM lambda correction from {csv_path.name} "
-          "(lambda = Gamma_up_3_states_hmm / 2*Omega_DG)")
-    return csv_path
-
-
-def _make_source(name: str):
-    """Resolve a data mode to (loader, folder, data_mode, guess_preset)."""
-    if name == "ens_avg":
-        csv = ENSEMBLE_AVERAGE_CSV if (ENSEMBLE_AVERAGE_CSV and ENSEMBLE_AVERAGE_CSV.exists()) else None
-        if csv is None:
-            print("[ens_avg] CSV not found, using lambda_zeno_estimation from JSON")
-        return EnsembleAverageLoader(csv_path=csv), ENS_AVG_FOLDER, "ens_avg", "ens_avg_experimental"
-    if name == "post_selected":
-        csv = _resolve_hmm_csv(POST_SELECTED_FOLDER, POST_SELECTED_CSV)
-        return (PostSelectedLoader(csv_path=csv), POST_SELECTED_FOLDER,
-                "post_selected", "post_selected_experimental")
-    if name == "parity":
-        return ParityLoader(), PARITY_FOLDER, "parity", None
-    raise ValueError(f"Unknown DATA_MODE '{name}'; expected "
-                     f"'ens_avg', 'post_selected' or 'parity'.")
-
-
-def _resolve_uncertainty_source(data_mode: str) -> str:
-    """Validate UNCERTAINTY_SOURCE and apply per-mode fallbacks."""
-    src = UNCERTAINTY_SOURCE
-    if src == "fit_errorbars":     # legacy name
-        print("Note: UNCERTAINTY_SOURCE 'fit_errorbars' is now 'fit_covariance'.")
-        src = "fit_covariance"
-    if src not in ("data_bootstrap", "fit_covariance", "residual_bootstrap"):
-        raise ValueError(f"Unknown UNCERTAINTY_SOURCE '{UNCERTAINTY_SOURCE}'.")
-    if src == "data_bootstrap" and data_mode not in ("ens_avg", "post_selected"):
-        print(f"Warning: data bootstrap has no measurement statistics for "
-              f"'{data_mode}' — falling back to residual_bootstrap.")
-        src = "residual_bootstrap"
-    return src
-
-
-def _build_steps(data_mode: str, observables: list[str]):
-    """Assemble MPM → (Refine) → Bootstrap steps from the global config."""
-    src = _resolve_uncertainty_source(data_mode)
-    conj = (CONJUGATE_PAIRS if CONJUGATE_PAIRS is not None
-            else data_mode in ("post_selected", "ens_avg"))
-    steps = [
-        MPMStep(order=ORDER, observable_key=observables,
-                plot_svd=PLOT_SVD, n_sv=10, save_dir=OUTPUT_DIR),
-    ]
-    if REFINE_POLES or src == "fit_covariance":
-        # fit_covariance needs the refinement covariance, so RefineStep is
-        # forced on in that mode.
-        steps.append(RefineStep(observable_key=observables, conjugate_pairs=conj))
-    if src == "data_bootstrap":
-        steps.append(BootstrapStep(n_boot=N_BOOTSTRAP, seed=SEED,
-                                   mode="data", n_jobs=N_JOBS))
-    elif src == "fit_covariance":
-        steps.append(BootstrapStep(n_boot=N_COV_SAMPLES, seed=SEED,
-                                   mode="parametric"))
-    else:
-        steps.append(BootstrapStep(n_boot=N_BOOTSTRAP, seed=SEED,
-                                   mode="residual"))
-    return steps, src
-
-
-def run_mpm(loader, folder, *, data_mode: str, observables: list[str]):
-    """Unified MPM + bootstrap entry point for any loader/data mode."""
-    folder = Path(folder)
-    if not folder.exists():
-        print(f"[{data_mode}] Folder not found: {folder}")
-        return None, None
-
-    print(f"\n=== MPM ({data_mode}, observables={observables}) ===")
-    steps, src = _build_steps(data_mode, observables)
+def run_mpm(job: dict, loader, folder: Path):
+    """MPM + bootstrap for one job.  Returns (result, saved JSON path)."""
+    data_mode, observables = job["data_mode"], job["observables"]
+    print(f"\n=== MPM ({data_mode}, observables={observables}, order={job['order']}) ===")
+    steps, src = _build_steps(job)
     pipeline = MPMPipeline.from_loader(
         loader, folder,
         data_mode=data_mode,
         observables=observables,
         steps=steps,
-        lambda_range=LAMBDA_RANGE,
-        max_files=N_LAMBDA_TEST,
-        t_max=T_MAX,
+        lambda_range=job["lambda_range"],
+        max_files=MAX_FILES,
+        t_max=job["t_max"],
+        drop_first_point=job["drop_first_point"],
         uncertainty_source=src,
     )
     result = pipeline.run()
-    _plot_mpm_result(pipeline.records, result, data_mode)
+
+    fig, _ = plot_spectrum_panels(result, title=data_mode)
+    fig.tight_layout()
+    tag_mode, scan_number = _result_tags(result)
+    _show_and_save(fig, "spectrum", data_mode=tag_mode, scan_number=scan_number)
+
     saved_path = None
     if not DEBUG:
         saved_path = pipeline.save(OUTPUT_DIR, full=SAVE_FULL_ANALYSIS)
@@ -348,80 +409,94 @@ def run_mpm(loader, folder, *, data_mode: str, observables: list[str]):
     return result, saved_path
 
 
-def run_slider_plot(loader, folder, result=None):
-    """Interactive per-λ trace browser for the configured observables.
+def run_transitions(result, job: dict, json_path=None):
+    """The two transitions on the pole strands, each with its own error bar.
 
-    When an analysis ``result`` is given, the fit overlay uses its (refined,
-    branch-tracked) median poles instead of re-running MPM per λ.
+    state freezing : lam(ksi=0), ksi = (2·Re(e3) − Re(e2)) / (Re(e2) − Re(e3))
+    exceptional pt : lam_EP, zero of the pair discriminant Delta = c1² − 4·c0
+
+    Both errors are per-realization: the crossing (or the line fit through it)
+    is redone inside every bootstrap draw and the 16/84 spread of those values
+    is the error bar.  The central value comes from the unresampled poles.
     """
-    folder = Path(folder)
-    if not folder.exists():
-        print(f"[slider] Folder not found: {folder}")
-        return
-    records = loader.load(
-        folder,
-        observables=PLOT_OBSERVABLES,
-        lambda_range=LAMBDA_RANGE,
-        max_files=N_LAMBDA_TEST,
-        t_max=T_MAX,
-    )
-    fixed_poles = None
-    if result is not None:
-        fixed_poles = {
-            float(lam): -result.poles.decay_rates[i] + 1j * result.poles.frequencies[i]
-            for i, lam in enumerate(result.lambda_values)
-        }
-    # Keep the widget alive: matplotlib only weak-references slider callbacks,
-    # so a dropped reference leaves a slider that draws but does not respond.
-    slider = plot_time_traces_slider(
-        records,
-        observable_key=PLOT_OBSERVABLES,
-        scales=PLOT_SCALES,
-        take_abs=PLOT_TAKE_ABS,
-        mpm_order=ORDER,
-        fixed_poles=fixed_poles,
-    )
-    _LIVE_WIDGETS.append(slider)
-    return slider
+    cfg = job["transitions"]
+    method, half_width, lambda_max = cfg["method"], cfg["half_width"], cfg["lambda_max"]
+    print(f"\n=== Transitions ({job['label']}) ===")
+    data_mode, scan_number = _result_tags(result)
+    obs_tag = "+".join(job["observables"])
+    transitions = {}
 
-
-def run_ksi_crossing(result, json_path=None):
-    """Ksi (2·Re(e3) − Re(e2)) and discriminant zero crossings, per realization."""
-    print(f"\n=== Ksi zero crossing ===")
-    ksi = KsiCrossingPipeline(result, lambda_max=KSI_LAMBDA_MAX).run()
+    # --- state freezing: ksi = 0 --------------------------------------------
+    ksi = KsiCrossingPipeline(result, lambda_max=lambda_max).run()
+    ksi_central = ksi.lambda_ksi_zero
     if ksi.crossing_quantiles is not None:
         q16, q50, q84 = ksi.crossing_quantiles
-        print(f"  lam_EP (ksi) = {q50:.4f} +{q84 - q50:.4f} / -{q50 - q16:.4f}")
-    elif ksi.lambda_ep is not None:
-        print(f"  lam_EP (ksi) = {ksi.lambda_ep:.4f} (no realization samples)")
+        centre = ksi_central if ksi_central is not None else q50
+        print(f"  STATE FREEZING  lam(ksi=0) = {centre:.4f} +/- {(q84 - q16) / 2:.4f}   "
+              f"[bootstrap 16/50/84 = {q16:.4f}/{q50:.4f}/{q84:.4f}]")
+    elif ksi_central is not None:
+        print(f"  STATE FREEZING  lam(ksi=0) = {ksi_central:.4f}  "
+              f"(no bootstrap draws — no error bar)")
+    else:
+        print("  STATE FREEZING  ksi has no zero crossing.")
+    if cfg["plot_ksi"]:
+        ax = plot_ksi_curve(ksi, title=f"State freezing: ksi = 0  ({data_mode}, {obs_tag})")
+        _show_and_save(ax.get_figure(), "state_freezing_ksi",
+                       data_mode=data_mode, scan_number=scan_number)
 
-    # Discriminant Delta = c1^2 - 4*c0 per realization: the preferred EP
-    # diagnostic (Delta < 0 conjugate pair, = 0 EP, > 0 two real poles).
-    transitions = {}
+    # --- exceptional point: Delta = 0 ---------------------------------------
+    d_quantiles = d_med = d_lo = d_hi = None
     raw = result.poles.raw_samples
     if raw is not None and raw.param_samples is not None:
-        d_cross, _, _, _ = discriminant_crossing_samples(
-            raw, lambda_max=KSI_LAMBDA_MAX
+        d_cross, d_med, d_lo, d_hi = discriminant_crossing_samples(
+            raw, lambda_max=lambda_max, method=method, half_width=half_width,
         )
         if np.any(np.isfinite(d_cross)):
             q16, q50, q84 = np.nanpercentile(d_cross, [16, 50, 84])
-            print(f"  lam_EP (Delta=0) = {q50:.4f} +{q84 - q50:.4f} / -{q50 - q16:.4f}  "
-                  f"({np.mean(np.isnan(d_cross)):.1%} of realizations had no crossing)")
+            d_quantiles = (q16, q50, q84)
             transitions["delta_crossing_samples"] = d_cross
             transitions["delta_crossing_quantiles"] = [q16, q50, q84]
+            transitions["delta_crossing_method"] = method
         else:
-            print("  Delta=0: no realization had a crossing.")
+            print("  EXCEPTIONAL PT  no bootstrap realization had a Delta crossing.")
+    else:
+        print("  EXCEPTIONAL PT  no quadratic parameters stored — the discriminant "
+              "needs a bootstrap/covariance run (n_boot >= 1).")
 
-    ax = plot_ksi_curve(ksi)
-    data_mode = str(result.metadata.get("data_mode",
-                                        result.metadata.get("source_tag", "unknown")))
-    scan_number = result.metadata.get("scan_number")
-    if scan_number is not None:
-        scan_number = int(scan_number)
-    _show_and_save(
-        ax.get_figure(), "ksi_crossing",
-        data_mode=data_mode, scan_number=scan_number,
-    )
+    lam_d = np.asarray(result.lambda_values, dtype=float)
+    central = -result.poles.decay_rates + 1j * result.poles.frequencies
+    d_central = np.array([
+        discriminant_from_params(pack_pole_params(p), central.shape[1]) for p in central
+    ], dtype=float)
+    if lambda_max is not None:
+        m = lam_d <= lambda_max
+        lam_d, d_central = lam_d[m], d_central[m]
+    lam_ep, fit = linfit_zero_crossing(lam_d, d_central, half_width=half_width,
+                                       return_fit=True)
+    first = find_zero_crossings(lam_d, d_central)
+    if d_quantiles is not None:
+        q16, q50, q84 = d_quantiles
+        print(f"  EXCEPTIONAL PT  lam_EP     = {lam_ep:.4f} +/- {(q84 - q16) / 2:.4f}   "
+              f"[bootstrap 16/50/84 = {q16:.4f}/{q50:.4f}/{q84:.4f}, "
+              f"{np.mean(np.isnan(transitions['delta_crossing_samples'])):.1%} without a crossing]")
+    elif np.isfinite(lam_ep):
+        print(f"  EXCEPTIONAL PT  lam_EP     = {lam_ep:.4f}  (no bootstrap draws — no error bar)")
+    print(f"                  ({method} on Delta; raw first sign change at "
+          + (f"{first[0]:.4f})" if first else "none)"))
+    if np.isfinite(lam_ep):
+        transitions["delta_linfit_central"] = lam_ep
+
+    if cfg["plot_discriminant"]:
+        band = (d_lo, d_hi) if (d_med is not None and len(d_med) == len(lam_d)) else (None, None)
+        ax_d = plot_discriminant_curve(
+            lam_d, d_central, fit=fit, lambda_ep=lam_ep,
+            first_crossing=first[0] if first else None,
+            crossing_quantiles=d_quantiles, delta_lower=band[0], delta_upper=band[1],
+            title=f"Exceptional point: Delta = 0  ({data_mode}, {obs_tag})",
+        )
+        _show_and_save(ax_d.get_figure(), "exceptional_point_discriminant",
+                       data_mode=data_mode, scan_number=scan_number)
+
     if json_path is not None and not DEBUG:
         augment_json_with_ksi(json_path, ksi)
         if transitions:
@@ -429,38 +504,24 @@ def run_ksi_crossing(result, json_path=None):
     return ksi
 
 
-def run_critical_point(result=None, guess=None, json_path=None):
-    """Fit critical-point sqrt model."""
-    if result is not None:
-        cp = CriticalPointPipeline(result, lambda_max=CP_LAMBDA_MAX)
-    elif CRITICAL_POINT_JSON is not None and CRITICAL_POINT_JSON.exists():
-        cp = CriticalPointPipeline.from_json(CRITICAL_POINT_JSON, lambda_max=CP_LAMBDA_MAX)
-        json_path = CRITICAL_POINT_JSON
-    else:
-        print(f"[critical_point] No result and no valid JSON — skipping.")
-        return None
-
-    print(f"\n=== Critical-point fit ===")
-    if guess is None or CP_SOFT_GUESS:
-        # Soft guess: only λ_c bounded (CP_LAMBDA_C_BOUNDS), a/b free.
-        fit = cp.fit(
-            lambda_c_guess=CP_LAMBDA_C_GUESS,
-            soft_bounds=True, lambda_c_bounds=CP_LAMBDA_C_BOUNDS,
-            window_left=50, window_right=15,
-        )
-    else:
-        lambda_c_guess, a_guess, b_guess = guess["lambda_c"], guess["a"], guess["b"]
-        fit = cp.fit(lambda_c_guess=lambda_c_guess, a_guess=a_guess, b_guess=b_guess, window_left=50, window_right=15)
-    print(f"  lam_c (aggregate fit) = {fit.lambda_c:.4f} +/- {fit.lambda_c_err:.4f}")
+def run_critical_point(result, job: dict, json_path=None):
+    """sqrt fit of the pole splitting → lambda_c (aggregate + per realization)."""
+    cfg = job["critical_point"]
+    guess, bounds, lambda_max = cfg["lambda_c_guess"], cfg["lambda_c_bounds"], cfg["lambda_max"]
+    print(f"\n=== Critical-point fit ({job['label']}) ===")
+    cp = CriticalPointPipeline(result, lambda_max=lambda_max)
+    fit = cp.fit(
+        lambda_c_guess=guess, soft_bounds=True, lambda_c_bounds=bounds,
+        window_left=50, window_right=15,
+    )
+    print(f"  lam_c (aggregate fit) = {fit.lambda_c:.4f} +/- {fit.lambda_c_err:.4f}   "
+          f"[guess {guess}, bounds {bounds}]")
     print(f"  chi2_red = {fit.chi2_reduced:.3f}  R2 = {fit.r_squared:.4f}")
 
-    # Per-realization sqrt fit: lambda_c^(b) fitted separately for every
-    # bootstrap realization — uncertainty read off the distribution.
-    if (CP_PER_REALIZATION and result is not None
-            and result.poles.raw_samples is not None):
+    if cfg["per_realization"] and result.poles.raw_samples is not None:
         raw = result.poles.raw_samples
-        if CP_LAMBDA_MAX is not None:
-            m = raw.lambda_values <= CP_LAMBDA_MAX
+        if lambda_max is not None:
+            m = raw.lambda_values <= lambda_max
             raw = PoleSamples(
                 samples=raw.samples[m],
                 observable_key=raw.observable_key,
@@ -469,11 +530,8 @@ def run_critical_point(result=None, guess=None, json_path=None):
                                if raw.param_samples is not None else None),
             )
         lam_c_samples = fit_sqrt_per_realization(
-            raw,
-            lambda_c_guess=CP_LAMBDA_C_GUESS,
-            lambda_c_bounds=CP_LAMBDA_C_BOUNDS,
-            window_left=50, window_right=15,
-            omega_s=result.omega_s,
+            raw, lambda_c_guess=guess, lambda_c_bounds=bounds,
+            window_left=50, window_right=15, omega_s=result.omega_s,
         )
         if np.any(np.isfinite(lam_c_samples)):
             q16, q50, q84 = np.nanpercentile(lam_c_samples, [16, 50, 84])
@@ -488,83 +546,209 @@ def run_critical_point(result=None, guess=None, json_path=None):
         else:
             print("  Per-realization sqrt fit: no realization converged.")
 
-    # Plot: 3-panel appendix style
+    # 3-panel appendix-style figure; the fit lands on the result so the
+    # "sqrt" figure layout can reuse it.
     cp.result.critical_point_sqrt_fit = fit
     fig = plot_appendix_bootstrap(
-        cp.result,
-        lambda_max=CP_LAMBDA_MAX,
-        fit_validity_limit=CP_LAMBDA_MAX,
-        real_axis_ticks=[0.0, 1, 2],
-        real_split_axis_ticks=[0.0, 0.6, 1.2],
+        cp.result, lambda_max=lambda_max, fit_validity_limit=lambda_max,
+        real_axis_ticks=[0.0, 1, 2], real_split_axis_ticks=[0.0, 0.6, 1.2],
     )
-    cp_data_mode = str(cp.result.metadata.get("data_mode",
-                       cp.result.metadata.get("source_tag", "unknown")))
-    cp_scan_number = cp.result.metadata.get("scan_number")
-    if cp_scan_number is not None:
-        cp_scan_number = int(cp_scan_number)
-    _show_and_save(
-        fig,
-        "critical_point_appendix",
-        data_mode=cp_data_mode,
-        scan_number=cp_scan_number,
-    )
+    data_mode, scan_number = _result_tags(cp.result)
+    _show_and_save(fig, "critical_point_appendix",
+                   data_mode=data_mode, scan_number=scan_number)
 
-    if not DEBUG:
+    if json_path is not None and not DEBUG:
         path = cp.save(json_path)
         print(f"Saved: {path.name}")
     return fit
 
 
+def run_slider_plot(result, job: dict, loader, folder: Path):
+    """Interactive per-λ trace browser; the fit overlay uses the result's poles."""
+    cfg = job["slider"]
+    records = loader.load(
+        folder,
+        observables=job["observables"],
+        lambda_range=job["lambda_range"],
+        max_files=MAX_FILES,
+        t_max=job["t_max"],
+        drop_first_point=job["drop_first_point"],
+    )
+    fixed_poles = {
+        float(lam): -result.poles.decay_rates[i] + 1j * result.poles.frequencies[i]
+        for i, lam in enumerate(result.lambda_values)
+    }
+    slider = plot_time_traces_slider(
+        records,
+        observable_key=job["observables"],
+        scales=cfg["scales"],
+        take_abs=cfg["take_abs"],
+        mpm_order=job["order"],
+        fixed_poles=fixed_poles,
+    )
+    _LIVE_WIDGETS.append(slider)
+    return slider
+
+
+def run_figure(result, job: dict):
+    """Paper transition figure from this run's result (see the clause comment)."""
+    from mpm_analysis.plotting.paper_figures.first_transition_main import (
+        plot_first_transition_figure,
+    )
+    cfg = job["figure"]
+    layout = cfg["layout"]
+    print(f"\n=== Paper figure ({job['label']}, {layout}) ===")
+    if layout == "sqrt" and getattr(result, "critical_point_sqrt_fit", None) is None:
+        print("[figure] result carries no sqrt fit — enable the critical point "
+              "(or switch to the 'discriminant' layout).")
+        return None
+    half_width = job.get("transitions", {}).get("half_width", 0.15)
+    fig = plot_first_transition_figure(
+        result,
+        layout=layout,
+        lambda_max=cfg["lambda_max"],
+        fit_validity_limit=cfg["fit_validity"],
+        real_axis_scale=cfg["real_axis_scale"],
+        real_axis_ticks=cfg["real_axis_ticks"],
+        real_split_axis_ticks=cfg["real_split_axis_ticks"],
+        discriminant_half_width=half_width,
+    )
+    data_mode, scan_number = _result_tags(result)
+    # Paper figures: own folder, PDF + SVG + high-res PNG, stem naming the
+    # transition, layout, data mode, scan, observables and order + UTC stamp.
+    if SAVE_FIGURES and not DEBUG:
+        from mpm_analysis.utils.windows_paths import save_figure_pdf_svg
+        stem = build_figure_filename(
+            figure_tag=(f"{job['label']}_{layout}_{'+'.join(job['observables'])}"
+                        f"_order{job['order']}"),
+            data_mode=data_mode, scan_number=scan_number, extension="",
+        ).rstrip(".")
+        save_figure_pdf_svg(fig, stem, PAPER_FIGURES_DIR, dpi=PAPER_FIGURES_DPI, png=True)
+    if SHOW_PLOTS:
+        plt.show(block=False)
+    return fig
+
+
+def run_export_figure_data(result, job: dict, json_path, loader, folder: Path):
+    """Write the files run_files/make_third_transition_figure.py reads.
+
+    A fresh ``<parent>/fitting_results_<UTC stamp>/`` folder receives this
+    run's result JSON (panel B) and one ``<scan file>_mpm_fit.json`` per λ
+    (panel A overlays): ``times_smooth`` / ``fit_curve`` of the modal model
+    with this run's poles at that λ and amplitudes re-solved on the exported
+    observable's own trace — the same construction as the slider overlay.
+    Returns the folder.
+    """
+    cfg = job["export"]
+    key = cfg["observable"]
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out = Path(cfg["parent"]) / f"fitting_results_{stamp}"
+    out.mkdir(parents=True, exist_ok=False)
+    print(f"\n=== Export for make_third_transition_figure.py ({job['label']}) ===")
+
+    # Panel B: the result JSON (already augmented with the sqrt fit if the
+    # critical point ran; DEBUG never saved one, so save a fresh copy here).
+    if json_path is not None:
+        result_name = Path(shutil.copy2(json_path, out / Path(json_path).name)).name
+    else:
+        result_name = save_result(result, out, full=False).name
+    print(f"  {result_name}")
+
+    # Panel A: per-λ fit curves of `key` with this run's poles.
+    records = loader.load(
+        folder, observables=[key],
+        lambda_range=job["lambda_range"], max_files=MAX_FILES,
+        t_max=job["t_max"], drop_first_point=job["drop_first_point"],
+    )
+    lam_res = np.asarray(result.lambda_values, dtype=float)
+    poles_res = -result.poles.decay_rates + 1j * result.poles.frequencies
+    n_written = n_skipped = 0
+    for rec in records:
+        i = int(np.argmin(np.abs(lam_res - rec.lambda_val)))
+        poles = poles_res[i]
+        if abs(lam_res[i] - rec.lambda_val) > 1e-6 or not np.all(np.isfinite(poles)):
+            n_skipped += 1
+            continue
+        amps = solve_linear_amplitudes(rec.t, rec.signal, poles)
+        t_smooth = np.linspace(float(rec.t[0]), float(rec.t[-1]), int(cfg["n_smooth"]))
+        payload = {
+            "times_smooth": t_smooth.tolist(),
+            "fit_curve": reconstruct_signal(t_smooth, poles, amps).tolist(),
+            "lambda": float(rec.lambda_val),
+            "observable": key,
+            "poles_re_1_per_us": np.real(poles).tolist(),
+            "poles_im_rad_per_us": np.imag(poles).tolist(),
+            "amplitudes_re": np.real(amps).tolist(),
+            "amplitudes_im": np.imag(amps).tolist(),
+            "mpm_order": int(job["order"]),
+            "lambda_source": loader.lambda_source,
+            "analysis_json": result_name,
+            "original_file": str(folder / rec.source_file),
+        }
+        with open(out / f"{Path(rec.source_file).stem}_mpm_fit.json", "w",
+                  encoding="utf-8") as f:
+            json.dump(payload, f, indent=1)
+        n_written += 1
+    print(f"  {n_written} *_mpm_fit.json files ({key}, {cfg['n_smooth']} points)"
+          + (f", {n_skipped} records without a matching λ / finite poles" if n_skipped else ""))
+    print(f"  Folder: {out}")
+    return out
+
+
+def run_job(job: dict) -> None:
+    """One transition: MPM, then every nested task the clause enabled."""
+    print(f"\n##### {job['label']}  ({job['data_mode']}) #####")
+    if "mpm" not in job:
+        print("  MPM disabled — nothing to do (every other step needs its result).")
+        return
+    loader, folder = _make_source(job["data_mode"])
+    if not folder.exists():
+        print(f"  Folder not found: {folder}")
+        return
+    result, json_path = run_mpm(job, loader, folder)
+    if "transitions" in job:
+        run_transitions(result, job, json_path)
+    if "critical_point" in job:
+        run_critical_point(result, job, json_path)   # before the figure: "sqrt" layout reuses the fit
+    if "slider" in job:
+        run_slider_plot(result, job, loader, folder)
+    if "figure" in job:
+        run_figure(result, job)
+    if "export" in job:
+        run_export_figure_data(result, job, json_path, loader, folder)
+
+
+# ---- stand-alone checks ---------------------------------------------------
+
 def run_simulation_test():
     """Quick end-to-end test on synthetic data (no real data needed)."""
-    print(f"\n=== Simulation test ===")
+    print("\n=== Simulation test ===")
     sim = PostSelectedDynamicsSimulator(
-        num_lambdas=30,
-        simulation_duration=25.0,
-        min_alpha=0.1,
-        max_alpha=2.0,
+        num_lambdas=30, simulation_duration=25.0, min_alpha=0.1, max_alpha=2.0,
     )
     records = sim.to_observable_records()
     print(f"  Simulated {len(records)} records")
-
-    src = _resolve_uncertainty_source("simulation")   # → never data_bootstrap
-    steps = [MPMStep(order=ORDER)]
-    if REFINE_POLES or src == "fit_covariance":
-        # conjugate_pairs forced on here for coverage of the constrained fit
-        steps.append(RefineStep(conjugate_pairs=True))
-    if src == "fit_covariance":
-        steps.append(BootstrapStep(n_boot=N_COV_SAMPLES, seed=SEED, mode="parametric"))
-    else:
-        steps.append(BootstrapStep(n_boot=N_BOOTSTRAP, seed=SEED, mode="residual"))
+    steps = [MPMStep(order=3),
+             BootstrapStep(n_boot=20 if DEBUG else 100, seed=SEED, mode="residual")]
     result = MPMPipeline.from_records(records, steps=steps).run()
     print(f"  Poles shape: {result.poles.decay_rates.shape}")
-    _plot_mpm_result(records, result, "simulation")
+    fig, _ = plot_spectrum_panels(result, title="simulation")
+    fig.tight_layout()
+    _show_and_save(fig, "spectrum", data_mode="simulation")
     return result
 
 
-def run_liouvillian_spectrum():
-    """Plot eigenvalues of the 4x4 Liouvillian vs λ at k=π."""
-    print("\n=== Liouvillian spectrum (k=π) ===")
-    sim = LiouvillianSpectrum(
-    )
-    fig, _ = sim.plot()
-    fig.suptitle("4×4 Liouvillian eigenvalues vs λ  (k=π)", fontsize=13)
-    _show_and_save(fig, "liouvillian_spectrum", data_mode="theory")
-
-
 def run_benchmark():
-    """Test analysis robustness with injected Gaussian noise."""
-    print(f"\n=== Benchmark ===")
+    """Analysis robustness with injected shot noise."""
+    print("\n=== Benchmark ===")
     sim = PostSelectedDynamicsSimulator(
-        num_lambdas=20, simulation_duration=40.0,
-        min_alpha=0.1, max_alpha=2.0,
+        num_lambdas=20, simulation_duration=40.0, min_alpha=0.1, max_alpha=2.0,
     )
-    clean_records = sim.to_observable_records()
-
     bench = BenchmarkPipeline(
-        clean_records=clean_records,
-        noise_models=[ShotNoise(n_shots=6*3e4, seed=0)],
-        analysis_steps=[MPMStep(order=ORDER), BootstrapStep(n_boot=N_BOOTSTRAP, seed=SEED)],
+        clean_records=sim.to_observable_records(),
+        noise_models=[ShotNoise(n_shots=6 * 3e4, seed=0)],
+        analysis_steps=[MPMStep(order=3),
+                        BootstrapStep(n_boot=20 if DEBUG else 100, seed=SEED)],
         n_trials=5 if DEBUG else 20,
     )
     result = bench.run(lambda_c_guess=1.25)
@@ -572,41 +756,28 @@ def run_benchmark():
     return result
 
 
+def run_liouvillian_spectrum():
+    """Eigenvalues of the 4×4 Liouvillian vs λ at k=π."""
+    print("\n=== Liouvillian spectrum (k=π) ===")
+    fig, _ = LiouvillianSpectrum().plot()
+    fig.suptitle("4×4 Liouvillian eigenvalues vs λ  (k=π)", fontsize=13)
+    _show_and_save(fig, "liouvillian_spectrum", data_mode="theory")
+
+
 # ===========================================================================
 # MAIN
 # ===========================================================================
 
 if __name__ == "__main__":
-  
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    mpm_result = None
-    mpm_json_path = None
-    guess = None
-
-    if RUN_MPM or RUN_SLIDER_PLOT:
-        loader, folder, data_mode, guess_preset = _make_source(DATA_MODE)
-        if RUN_MPM:
-            mpm_result, mpm_json_path = run_mpm(
-                loader, folder, data_mode=data_mode, observables=OBSERVABLES
-            )
-            if guess_preset is not None:
-                guess = get_guess(guess_preset)
-        if RUN_SLIDER_PLOT:
-            run_slider_plot(loader, folder, result=mpm_result)
-
-    if RUN_KSI_CROSSING and mpm_result is not None:
-        run_ksi_crossing(mpm_result, json_path=mpm_json_path)
-
-    if RUN_CRITICAL_POINT:
-        run_critical_point(result=mpm_result, guess=guess, json_path=mpm_json_path)
+    for job in JOBS:
+        run_job(job)
 
     if RUN_SIMULATION_TEST:
         run_simulation_test()
-
     if RUN_BENCHMARK:
         run_benchmark()
-
     if RUN_LIOUVILLIAN_SPECTRUM:
         run_liouvillian_spectrum()
 

@@ -11,6 +11,8 @@ exploratory     — quick sanity-check plots (raw data, grids, spectra)
                   calibration via the Hankel SVD spectrum
 survival_curves — panel-A style survival probability plots
 pole_spectrum   — panel-B style decay rate + frequency plots
+dead_time_plots — dead-time compression sweep: traces + fits, poles vs c,
+                  discriminant / transitions vs c
 paper_figures/  — publication-quality paper figures
 
 SVD calibration workflow

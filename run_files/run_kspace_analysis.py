@@ -39,7 +39,7 @@ from mpm_analysis.utils.lab_paths import get_lab_path
 
 # ---- Source + data location ----
 SOURCE = "json"          # "json" | "compressed" | "simulated"
-SCAN_NUMBER = 22
+SCAN_NUMBER = 41
 
 # "simulated" points directly at a click_record_raw_*.npz file produced by
 # misc/generate_click_record_raw.py — set the path and skip the lab-path
@@ -65,13 +65,13 @@ RUN_EIGENVALUES_VS_LAMBDA_1D = False    # legacy fixed-k MPM (json source only)
 K_IDX_FOR_EIGENVALUES = 50              # k index (≈ π) for the legacy 1-D task
 
 # ---- Analysis parameters ----
-MAX_ORDER = 2
-MIN_ORDER = 2
+MAX_ORDER = 3
+MIN_ORDER = 3
 SVD_THRESHOLD = 0.2
 N_BOOTSTRAP = 1                # residual resampling inside KSpaceAnalysis
 BOOTSTRAP_OVER_RUNS = False    # compressed only: per-run analysis -> pole error bars
 SIGNAL_COMPONENT = "complex"   # "complex" | "real" | "imag"
-T_MAX_US = None
+T_MAX_US = 25                # max time to load from experimental records (µs), default is None
 LAMBDA_RANGE = None
 MAX_FILES = None               # json source only
 K_INDEX_RANGE = (1,-1)# None keeps the full selected/recomputed k grid
@@ -103,8 +103,8 @@ MIN_ALIVE_FRAC = 0.98
 #   "partial" - the interpolation: at most CORR_MAX_CLICKS clicks strictly
 #     before t (0 reproduces conditional, unlimited reproduces
 #     unconditional).  Keys: partial_click / partial_no_click.
-CORR_MODE = "unconditional"
-CORR_MAX_CLICKS = None         # only for mode="partial": int >= 0
+CORR_MODE = "conditional"
+CORR_MAX_CLICKS = None          # only for mode="partial": int >= 0
 CORR_OBSERVABLES = None        # None = both channels of the chosen mode
 CORR_MAX_TIME_US = None        # largest time (us); None = full record
 # Truncate once too few runs are still recorded.  Only ever active for the

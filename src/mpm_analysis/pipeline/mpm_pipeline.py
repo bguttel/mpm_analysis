@@ -83,6 +83,10 @@ class MPMPipeline:
         lambda_range: tuple[float, float] | None = None,
         max_files: int | None = None,
         t_max: float | None = None,
+        drop_first_point: bool = False,
+        splice_index: int | None = None,
+        splice_source: str = "S_prev_noclick",
+        splice_targets: tuple[str, ...] = ("S",),
         order: int = 3,
         n_boot: int = 2000,
         **metadata_kwargs,
@@ -100,6 +104,18 @@ class MPMPipeline:
             deprecated alias.
         observables:
             Observable key(s) to load.  ``None`` → the loader's default.
+
+        splice_index:
+            Replace this one time index of ``splice_targets`` with the same
+            index of ``splice_source`` (see ``ExperimentalLoader.load``).
+            Recorded in the result metadata when given, so a saved analysis
+            always states that one of its points came from another
+            sub-ensemble.
+        drop_first_point:
+            Drop the first sample of every file (the by-construction t=0
+            anchor of the survival scans) before any analysis step, in the
+            observables and the bootstrap statistics alike (see
+            ``ExperimentalLoader.load``).  Recorded in the result metadata.
         """
         if data_mode is None:
             data_mode = source_tag
@@ -112,6 +128,10 @@ class MPMPipeline:
             lambda_range=lambda_range,
             max_files=max_files,
             t_max=t_max,
+            drop_first_point=drop_first_point,
+            splice_index=splice_index,
+            splice_source=splice_source,
+            splice_targets=splice_targets,
         )
         if observables is None:
             obs_list = sorted({r.observable_key for r in records})
@@ -132,6 +152,14 @@ class MPMPipeline:
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             **metadata_kwargs,
         }
+        if drop_first_point:
+            meta["drop_first_point"] = True
+        if splice_index is not None:
+            # A spliced trace is not the file's own survival any more, so the
+            # saved analysis records exactly which point was swapped in.
+            meta["splice_index"] = int(splice_index)
+            meta["splice_source"] = str(splice_source)
+            meta["splice_targets"] = list(splice_targets)
         return cls(records, steps, metadata=meta, order=order, n_boot=n_boot)
 
     @classmethod
@@ -144,7 +172,7 @@ class MPMPipeline:
         max_files: int | None = None,
         order: int = 3,
         n_boot: int = 2000,
-        csv_path: str | Path | None = None,
+        csv_path: str | Path | bool | None = "auto",
         t_max: float | None = None,
         **metadata_kwargs,
     ) -> "MPMPipeline":
@@ -168,7 +196,7 @@ class MPMPipeline:
         max_files: int | None = None,
         order: int = 3,
         n_boot: int = 2000,
-        csv_path: str | Path | None = None,
+        csv_path: str | Path | bool | None = "auto",
         t_max: float | None = None,
         **metadata_kwargs,
     ) -> "MPMPipeline":
@@ -177,9 +205,10 @@ class MPMPipeline:
         Parameters
         ----------
         csv_path:
-            Optional path to HMM results CSV (``Gamma_up_3_states_hmm`` column).
-            When given, lambda is computed from the CSV rather than the JSON
-            ``lambda_zeno_estimation`` — this is the updated, HMM-calibrated scale.
+            ``"auto"`` (default) finds the HMM table that provably belongs
+            to ``folder`` and falls back to the JSON ``lambda_zeno_estimation``
+            when none does.  ``False`` forces the JSON value; an explicit path
+            is provenance-checked.  See ``io.experimental.discover_hmm_table``.
         """
         from mpm_analysis.io.experimental import PostSelectedLoader
         return cls.from_loader(
@@ -201,6 +230,7 @@ class MPMPipeline:
         order: int = 3,
         n_boot: int = 2000,
         t_max: float | None = None,
+   
         **metadata_kwargs,
     ) -> "MPMPipeline":
         """Load parity-scan data and return a ready-to-run pipeline."""

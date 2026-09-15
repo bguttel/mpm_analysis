@@ -340,11 +340,11 @@ def augment_json_with_ksi(
         "fraction_no_crossing": frac_none,
     }
     _save_json(jd, path)
-    lam_ep = (ksi_result.crossing_quantiles[1]
-              if ksi_result.crossing_quantiles is not None
-              else ksi_result.lambda_ep)
-    print(f"Augmented {path.name} with ksi crossing"
-          + (f" (lam_EP = {lam_ep:.4f})" if lam_ep is not None else ""))
+    lam_ksi = (ksi_result.crossing_quantiles[1]
+               if ksi_result.crossing_quantiles is not None
+               else ksi_result.lambda_ksi_zero)
+    print(f"Augmented {path.name} with the ksi (state-freezing) crossing"
+          + (f" (lam(ksi=0) = {lam_ksi:.4f})" if lam_ksi is not None else ""))
     return path
 
 
@@ -471,3 +471,67 @@ def _dump_sqrt_fit(fit: SqrtFitResult) -> dict:
             "curves": curves,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Dead-time compression sweep
+# ---------------------------------------------------------------------------
+
+def save_dead_time_sweep(result, path: str | Path) -> Path:
+    """Serialise a ``DeadTimeSweepResult`` (``pipeline.dead_time_pipeline``).
+
+    Schema::
+
+        {
+          "metadata": {...}, "parameters": {...},
+          "compress_coeffs": [...], "lambda_values": [...],
+          "tracks": {
+            "<method>": {"poles": {complex}, "delta": [[...]], "rmse": [[...]],
+                         "lambda_ep": [...], "lambda_ep_first": [...],
+                         "lambda_ep_quantiles": [[q16, q50, q84], ...] | null,
+                         "decay_lower"/"decay_upper"/"freq_lower"/"freq_upper":
+                             [[[...]]] | null}
+          }
+        }
+    """
+    from dataclasses import asdict
+
+    tracks = {}
+    for tr in result.tracks:
+        d = asdict(tr)
+        d.pop("method")
+        tracks[tr.method] = d
+    payload = {
+        "metadata": result.metadata,
+        "parameters": result.parameters,
+        "compress_coeffs": result.compress_coeffs,
+        "lambda_values": result.lambda_values,
+        "tracks": tracks,
+    }
+    path = Path(path)
+    _save_json(_jsonify(payload), path)
+    return path
+
+
+def load_dead_time_sweep(path: str | Path):
+    """Inverse of :func:`save_dead_time_sweep`."""
+    from mpm_analysis.pipeline.dead_time_pipeline import (
+        CompressionTrack, DeadTimeSweepResult,
+    )
+
+    jd = _dejsonify(_load_json(Path(path)))
+    tracks = {}
+    for method, d in jd["tracks"].items():
+        arrays = {k: (None if v is None else np.asarray(v))
+                  for k, v in d.items() if k != "lambda_ksi_zero"}  # pre-drop files
+        tracks[method] = CompressionTrack(method=method, **arrays)
+    direct = tracks.pop("direct")
+    fallback = next(iter(tracks.values()), None)
+    return DeadTimeSweepResult(
+        compress_coeffs=np.asarray(jd["compress_coeffs"], dtype=float),
+        lambda_values=np.asarray(jd["lambda_values"], dtype=float),
+        direct=direct,
+        fallback=fallback,
+        metadata=jd.get("metadata", {}),
+        parameters=jd.get("parameters", {}),
+    )

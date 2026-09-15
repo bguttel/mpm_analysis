@@ -100,8 +100,8 @@ def make_third_transition_figure(
     _add_lambda_arrows(ax_b, plotted_lambdas, LINECUT_COLORS, LINE_WIDTH)
 
     # ---- Panel labels ----
-    _add_panel_letter(ax_a, "A", mm_to_inch, LABELS_FONT_SIZE)
-    _add_panel_letter(ax_b, "B", mm_to_inch, LABELS_FONT_SIZE)
+    _add_panel_letter(ax_a, "a", mm_to_inch, LABELS_FONT_SIZE)
+    _add_panel_letter(ax_b, "b", mm_to_inch, LABELS_FONT_SIZE)
 
     # ---- Save ----
     if save_dir is not None:
@@ -131,16 +131,12 @@ def _add_lambda_arrows(ax, lambdas: list[float], colors: list, arrow_lw: float) 
 
 
 def _add_panel_letter(ax, letter: str, mm_to_inch_fn, fontsize: int) -> None:
-    from matplotlib.transforms import ScaledTranslation
-    offset = ScaledTranslation(
-        xt=mm_to_inch_fn(-4.0),
-        yt=mm_to_inch_fn(4.0),
-        scale_trans=ax.figure.dpi_scale_trans,
-    )
-    ax.text(
-        x=0.06, y=1.0, s=letter,
-        transform=ax.transAxes + offset,
-        fontsize=fontsize,
-        fontweight="bold",
-        ha="left", va="top", usetex=False,
-    )
+    """Thin wrapper kept for this module's call sites.
+
+    The placement/typography convention lives in
+    :func:`mpm_analysis.plotting._style.add_panel_letter`, shared with the
+    appendix figures so every paper panel letter renders identically.
+    """
+    from mpm_analysis.plotting._style import add_panel_letter
+
+    add_panel_letter(ax, letter, fontsize=fontsize)

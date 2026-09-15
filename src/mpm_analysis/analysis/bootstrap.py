@@ -256,7 +256,58 @@ _POST_SELECTED_SURVIVAL = {
     "survival": ("survival", "N_survival"),      # legacy key name
     "SX": ("SX", "N_attempts_SX"),
     "SZ": ("SZ", "N_attempts_SZ"),
+    # Conditioned raw-record survivals (run_conditional_p0.py write-back):
+    # their attempt counts are per-point arrays — the class sizes vary with t.
+    "S_prev_click": ("S_prev_click", "N_attempts_S_prev_click"),
+    "S_prev_noclick": ("S_prev_noclick", "N_attempts_S_prev_noclick"),
+    # Segment-pooled survival (run_pooled_p0.py write-back).  Its points share
+    # shots, so when the stats carry the first-click histogram
+    # (``pooled_counts``) the draw is one multinomial per axis and segment
+    # (see ``_resample_pooled_survival``); the per-point binomial below is
+    # only the fallback for stats without the histogram.
+    "S_pooled": ("S_pooled", "N_attempts_S_pooled"),
 }
+
+
+def _resample_pooled_survival(stats: dict, rng: np.random.Generator) -> np.ndarray:
+    """One shot-noise resample of the segment-pooled survival curve.
+
+    ``stats["pooled_counts"]`` is the ``(n_axes, n_seg, n_seg + 1)``
+    first-bright-bin histogram (slot 0 = never bright, slot ``k`` = first
+    bright at bin ``k``).  A shot's slot fixes its success at every time
+    point, so resampling each (axis, segment) row multinomially and
+    re-pooling reproduces the joint shot-noise distribution of the whole
+    curve — including the correlation between consecutive points, which a
+    per-point binomial would drop.
+
+    The curve is rebuilt on the file's full time axis and then cut by
+    ``stats["pooled_mask"]`` (the loader's ``t_max`` / drop mask).  The
+    ``t = 0`` anchor (every shot survives; ``1`` by construction, or
+    ``1 - init_error`` when the loader rewrote it) is drawn binomially on the
+    whole file's shot count, like the other survival channels.
+    """
+    from mpm_analysis.io.experimental.click_record_npz import (
+        pooled_survival_from_counts,
+    )
+    counts = np.asarray(stats["pooled_counts"], dtype=np.int64)
+    shape = counts.shape
+    n = counts.sum(axis=-1)                                   # (A, n_seg)
+    P = counts / np.maximum(n, 1)[..., None]
+    draw = rng.multinomial(n.ravel(), P.reshape(-1, shape[-1])).reshape(shape)
+    frac, _, n_att = pooled_survival_from_counts(draw)
+
+    mask = stats.get("pooled_mask")
+    measured = np.asarray(stats["S_pooled"], dtype=float)
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        frac, n_att = frac[mask], n_att[mask]
+        first_kept = bool(mask[0])
+    else:
+        first_kept = True
+    if first_kept and frac.size:
+        p0 = float(np.clip(measured[0], 0.0, 1.0))
+        frac[0] = rng.binomial(int(n_att[0]), p0) / max(int(n_att[0]), 1)
+    return frac
 
 # Product channels: observable key -> (Bloch field, conditional-count field,
 # survival channel that multiplies it).
@@ -324,19 +375,27 @@ def bootstrap_post_selected_measurements(
         """Binomial draw of one experiment's survival on its own attempts."""
         if skey in survival_cache:
             return survival_cache[skey]
+        if skey == "S_pooled" and stats.get("pooled_counts") is not None:
+            survival_cache[skey] = _resample_pooled_survival(stats, rng)
+            return survival_cache[skey]
         frac_field, n_field = _POST_SELECTED_SURVIVAL[skey]
         if stats.get(frac_field) is None or stats.get(n_field) is None:
-            # Older stats dicts carry only the dedicated survival: fall back to
-            # it rather than inventing per-experiment attempt counts.
-            if skey in ("S", "survival"):
-                raise KeyError(
-                    "bootstrap_post_selected_measurements: bootstrap_stats "
-                    f"lacks '{frac_field}'/'{n_field}'."
-                )
-            return _survival("survival")
+            if skey in ("SX", "SZ"):
+                # Older stats dicts carry only the dedicated survival: fall
+                # back to it rather than inventing per-experiment attempts.
+                return _survival("survival")
+            raise KeyError(
+                "bootstrap_post_selected_measurements: bootstrap_stats "
+                f"lacks '{frac_field}'/'{n_field}'."
+            )
         s = np.clip(np.asarray(stats[frac_field], dtype=float), 0.0, 1.0)
-        n = int(stats[n_field])
-        survival_cache[skey] = rng.binomial(n, s) / n
+        # Attempts: a scalar (one count for the whole curve) or a per-point
+        # array (the conditioned channels, whose class sizes vary with t).
+        n = np.asarray(stats[n_field], dtype=np.int64)
+        safe = n > 0
+        n_safe = np.where(safe, n, 1)
+        draw = rng.binomial(n_safe, s) / n_safe
+        survival_cache[skey] = np.where(safe, draw, s)
         return survival_cache[skey]
 
     def _tomo(key: str) -> np.ndarray:
@@ -416,17 +475,26 @@ def _data_bootstrap_worker(payload: dict) -> tuple:
     boot_imag = np.full((n_boot, order), np.nan, dtype=float)
     boot_params = np.full((n_boot, order), np.nan, dtype=float)
 
-    # Clean fit: only to pin the pencil parameter and (as fallback) the
-    # Hungarian reference.  The central result is NOT recomputed here.
-    try:
-        poles_ref, _, L_fit = matrix_pencil_method(t, payload["Y"], order,
-                                                   L=payload["L"])
-        poles_ref = sort_poles_canonical(poles_ref)
-    except Exception as exc:
-        return (boot_real, boot_imag, boot_params,
-                (n_boot, f"clean fit failed: {type(exc).__name__}: {exc}"))
     clean = payload["clean_poles"]
-    if clean is not None and np.all(np.isfinite(clean)):
+    pencil = payload.get("pencil", True)
+    if pencil:
+        # Clean fit: only to pin the pencil parameter and (as fallback) the
+        # Hungarian reference.  The central result is NOT recomputed here.
+        try:
+            poles_ref, _, L_fit = matrix_pencil_method(t, payload["Y"], order,
+                                                       L=payload["L"])
+            poles_ref = sort_poles_canonical(poles_ref)
+        except Exception as exc:
+            return (boot_real, boot_imag, boot_params,
+                    (n_boot, f"clean fit failed: {type(exc).__name__}: {exc}"))
+        if clean is not None and np.all(np.isfinite(clean)):
+            poles_ref = np.asarray(clean, dtype=complex)
+    else:
+        # Refine-only draws (non-uniform time axis): every draw starts from
+        # the clean poles and the pencil is never run.
+        if clean is None or not np.all(np.isfinite(clean)):
+            return (boot_real, boot_imag, boot_params,
+                    (n_boot, "refine-only bootstrap needs finite clean poles"))
         poles_ref = np.asarray(clean, dtype=complex)
 
     single = payload["single"]
@@ -437,8 +505,11 @@ def _data_bootstrap_worker(payload: dict) -> tuple:
             y_boot = resample(stats, keys, rng)
             if single:
                 y_boot = y_boot[0]
-            poles_b, _, _ = matrix_pencil_method(t, y_boot, order, L=L_fit)
-            poles_b = enforce_pole_count(poles_b, order)
+            if pencil:
+                poles_b, _, _ = matrix_pencil_method(t, y_boot, order, L=L_fit)
+                poles_b = enforce_pole_count(poles_b, order)
+            else:
+                poles_b = poles_ref.copy()
             if refine_settings is not None and np.all(np.isfinite(poles_b)):
                 poles_b = refine_poles(
                     t, y_boot, poles_b,
@@ -471,6 +542,7 @@ def run_data_bootstrap(
     clean_poles: "list[np.ndarray] | None" = None,
     refine_settings: dict | None = None,
     n_jobs: int = -1,
+    pencil: bool = True,
 ) -> list[_LambdaBootstrapResult]:
     """Data-resampling bootstrap: resample the measurement statistics.
 
@@ -504,6 +576,14 @@ def run_data_bootstrap(
     n_jobs:
         Parallel workers across lambda slices (process pool).  ``-1`` → all
         cores; ``1`` → serial.
+    pencil:
+        ``True`` (default) reruns the matrix pencil on every draw and then
+        refines.  ``False`` skips the pencil — every draw is the LSQ
+        refinement started from ``clean_poles`` — which is the only valid
+        choice when the records' time axis is **non-uniform** (e.g. after
+        :func:`mpm_analysis.analysis.dead_time.compress_records`), since the
+        pencil assumes equal spacing.  Requires ``clean_poles`` and
+        ``refine_settings``.
 
     Returns
     -------
@@ -511,6 +591,13 @@ def run_data_bootstrap(
         One result per lambda slice (with ``boot_params``), sorted by lambda.
     """
     from mpm_analysis.data_types.observables import group_records_by_lambda
+
+    if not pencil and (clean_poles is None or refine_settings is None):
+        raise ValueError(
+            "run_data_bootstrap(pencil=False) refines every draw from the "
+            "clean poles — pass clean_poles and refine_settings (a RefineStep "
+            "before the BootstrapStep provides both)."
+        )
 
     if observable_key is None:
         if not records:
@@ -557,7 +644,7 @@ def run_data_bootstrap(
             lambda_val=lam, t=t, Y=y, single=not joint, keys=keys,
             stats=stats, order=order, n_boot=n_boot, L=L_i,
             clean_poles=cp, refine_settings=refine_settings,
-            seed_seq=seed_children[i],
+            seed_seq=seed_children[i], pencil=pencil,
         ))
 
     def _empty():
