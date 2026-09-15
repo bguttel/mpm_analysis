@@ -27,14 +27,6 @@ Dropbox paths differ per machine.  `run.py` auto-detects the correct root
 using the hostname.  The mapping lives in
 `src/mpm_analysis/utils/lab_paths.py` and mirrors `ZenoPlotting/base.py`.
 
-**Currently registered machines:**
-
-| Hostname | User | Drive |
-|----------|------|-------|
-| `DESKTOP-BAEVOT2` | Noam Nezer | C: |
-| `DESKTOP-FQN6OUI` | Danielle Gov | C: |
-| `CMD-SRStudent1` | Barkay Guttel | E: |
-| `cmd-SRLenovoPc2` | Serge Rosenblum | E: |
 
 **Adding a new computer:**
 
