@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Unified analysis and plotting package for quantum Zeno effect experiments"
 requires-python = ">=3.11"
 dependencies = [
-    "numpy<2.0.0",
+    "numpy",
     "scipy>=1.13",
     "matplotlib>=3.10",
 ]
