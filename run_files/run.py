@@ -52,6 +52,7 @@ MAX_FILES = 10 if DEBUG else None   # load only the first N λ files (debugging)
 # your machine there if you get a "hostname not recognised" ValueError.
 
 _ZT = r"Common\QuantumZeno\Paper\zeno_paper_data"
+_NEW_SCAN_FOLDER = r"C:\Users\admin\Weizmann Institute Dropbox\Noam Nezer\Quantum Circuits Lab\Experiments\Zeno\CavityRecAl6\Chip_TransSap46_5\OPX\two_transmons\click_record_with_post_selected_tomography\Omega_BG0_scan"
 POST_SELECTED_DROPBOX = Path(get_lab_path(_ZT + r"\scan_experiment_results_10"))
 ENS_AVG_DROPBOX = Path(get_lab_path(_ZT + r"\scan_experiment_results_50"))
 PARITY_FOLDER = Path(get_lab_path(
@@ -62,15 +63,21 @@ PARITY_FOLDER = Path(get_lab_path(
 # inside the Dropbox tree — from the local mirror the ens_avg λ silently
 # falls back to the stored JSON value (~11 % lower), and would no longer
 # match what make_third_transition_figure.py loads for panel A.
-POST_SELECTED_FOLDER = Path(r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\old data\scan_experiment_results_10")
-ENS_AVG_FOLDER = ENS_AVG_DROPBOX
+# All 4 iterations of scan 3 merged per point (raw_data_tests/combine_scan_iterations.py)
+POST_SELECTED_FOLDER = Path(_NEW_SCAN_FOLDER) / "scan_experiment_results_4" / "scan_iteration"
+# POST_SELECTED_FOLDER = Path(_NEW_SCAN_FOLDER) / "scan_experiment_results_3" / "scan_iteration"
+ENS_AVG_FOLDER = r"C:\Users\admin\Weizmann Institute Dropbox\Noam Nezer\Quantum Circuits Lab\Experiments\Zeno\CavityRecAl6\Chip_TransSap46_5\OPX\two_transmons\survival_probability\Omega_BG0_scan\scan_experiment_results_0"
 # ENS_AVG_FOLDER = Path(r"C:\Users\admin\OneDrive - weizmann.ac.il\Msc\Zeno\Code\old_survival_data\scan_experiment_results_50")
 
-# λ axis: the loader finds the HMM calibration table that belongs to the
-# folder (matched on the full run id) and otherwise uses the JSON lambda,
-# which for the post-selected scan already is the HMM value.  The run prints
-# which one it used.   "auto" | False (force the JSON lambda) | Path(table)
-LAMBDA_SOURCE = "auto"
+# λ axis.  Default: each file's stored parameters.lambda_zeno_estimation.
+# Alternatively a per-drive HMM table (hmm_rates_per_drive.csv: converged
+# offline HMM of the alpha click records, one row per drive):
+# λ = gamma_BG_per_s_mean(drive) / (2·Ω_DG), looked up exactly at each file's
+# drive — never interpolated; a drive missing from the table is an error.
+# ("auto" would search the scan tree for a run-keyed table — scan-50 only.)
+LAMBDA_SOURCE: bool | str | Path = False
+if (HMM_DRIVE_LAMBDA := False):
+    LAMBDA_SOURCE = Path(_NEW_SCAN_FOLDER) / "scan_experiment_results_3" / "hmm_rates_per_drive.csv"
 
 OUTPUT_DIR = Path(__file__).parent.parent / "mpm_analysis_output"
 PAPER_FIGURES_DIR = Path(__file__).parent.parent / "paper_figures"
@@ -88,11 +95,12 @@ JOBS: list[dict] = []
 # ---------------------------------------------------------------------------
 # FIRST TRANSITION — post-selected survival probability (scan 10)
 # ---------------------------------------------------------------------------
-if (RUN_FIRST_TRANSITION := False):
+if (RUN_FIRST_TRANSITION := True):
     FIRST = dict(
         label="first_transition",
         data_mode="post_selected",      # "post_selected" | "ens_avg" | "parity"  (loader + folder)
-        observables=["S_pooled"],       # keys to load; 1 key → classic MPM, >1 → joint MPM
+        observables=["S"],       # keys to load; 1 key → classic MPM, >1 → joint MPM
+
                                         #   (common poles, per-observable amplitudes).
                                         #   post_selected: "S" (stored p_0_t_array),
                                         #   "S_pooled" (segment-pooled rebuild from the raw
@@ -100,7 +108,7 @@ if (RUN_FIRST_TRANSITION := False):
                                         #   run_files/raw_data_tests/run_pooled_p0.py),
                                         #   "S_prev_click" / "S_prev_noclick", X/Y/Z …
         order=3,                        # MPM model order (3 for both scans)
-        lambda_range=(0, 1.65),         # λ window to load
+        lambda_range=(0, 4),         # λ window to load
         t_max=None,                     # µs; None → full record
         drop_first_point=False,         # drop the by-construction t=0 anchor (S=1) from the
                                         #   data AND the bootstrap statistics.  The anchor is
@@ -133,9 +141,9 @@ if (RUN_FIRST_TRANSITION := False):
         if (FIRST_TRANSITIONS := True):
             FIRST["transitions"] = dict(
                 method="linfit",        # "linfit" (recommended) | "first"
-                half_width=0.15,        # λ half-window of the line fit
+                half_width=0.45,        # λ half-window of the line fit
                 lambda_max=None,        # e.g. 1.55 to match the critical-point window
-                plot_ksi=False,         # ksi(λ) with error bars + the ksi = 0 line
+                plot_ksi=True,         # ksi(λ) with error bars + the ksi = 0 line
                 plot_discriminant=True, # Delta(λ) with error bars + the fitted line
             )
 
@@ -144,9 +152,9 @@ if (RUN_FIRST_TRANSITION := False):
         # per_realization, separately in every bootstrap draw (16/50/84).
         if (FIRST_CRITICAL_POINT := True):
             FIRST["critical_point"] = dict(
-                lambda_c_guess=1.0,
-                lambda_c_bounds=(0.85, 1.15),   # guess ± 0.15
-                lambda_max=1.3,                 # exclude λ above this from the fit
+                lambda_c_guess=1.2,
+                lambda_c_bounds=(0.85, 1.5),   # guess ± 0.15
+                lambda_max=1.6,                 # exclude λ above this from the fit
                 per_realization=True,
             )
 
@@ -177,11 +185,11 @@ if (RUN_FIRST_TRANSITION := False):
 # ---------------------------------------------------------------------------
 # Same keys as FIRST.  D alone at order 3: the joint D/G/B/error pencil is a
 # B-dominated truncation bias (mpm_benchmarks/noise_robustness/v3_channelcheck.py).
-if (RUN_THIRD_TRANSITION := True):
+if (RUN_THIRD_TRANSITION := False):
     THIRD = dict(
         label="third_transition",
         data_mode="ens_avg",
-        observables=["D"],              # "D" | "G" | "B" | "error", or several for a joint fit
+        observables=["D","G","B","error"],              # "D" | "G" | "B" | "error", or several for a joint fit
         order=3,
         lambda_range=(0, 1.65),
         t_max=None,
@@ -207,11 +215,11 @@ if (RUN_THIRD_TRANSITION := True):
                 plot_discriminant=True,
             )
 
-        if (THIRD_CRITICAL_POINT := True):
+        if (THIRD_CRITICAL_POINT := False):
             THIRD["critical_point"] = dict(
                 lambda_c_guess=1.1,
                 lambda_c_bounds=(0.95, 1.25),   # guess ± 0.15
-                lambda_max=1.3,
+                lambda_max=1.7,
                 per_realization=True,
             )
 
@@ -241,7 +249,7 @@ if (RUN_THIRD_TRANSITION := True):
         #                                    smooth grid (times_smooth / fit_curve),
         #                                    poles = this run's, amplitudes re-solved
         #                                    on that trace; matched by kHz in the name
-        if (THIRD_EXPORT := True):
+        if (THIRD_EXPORT := False):
             THIRD["export"] = dict(
                 parent=ENS_AVG_DROPBOX,     # where the figure script reads from
                 observable="D",             # trace the fit curve describes — must be
@@ -280,11 +288,11 @@ from mpm_analysis.pipeline.critical_point_pipeline import CriticalPointPipeline
 from mpm_analysis.pipeline.benchmark_pipeline import BenchmarkPipeline
 from mpm_analysis.analysis.steps import MPMStep, BootstrapStep, RefineStep
 from mpm_analysis.analysis.ksi_crossing import (
-    KsiCrossingPipeline, discriminant_crossing_samples, discriminant_from_params,
+    KsiCrossingPipeline, discriminant_crossing_samples, discriminant_from_poles,
     linfit_zero_crossing, find_zero_crossings,
 )
 from mpm_analysis.analysis.matrix_pencil import (
-    pack_pole_params, solve_linear_amplitudes, reconstruct_signal,
+    solve_linear_amplitudes, reconstruct_signal,
 )
 from mpm_analysis.analysis.critical_point import fit_sqrt_per_realization
 from mpm_analysis.data_types.pole_samples import PoleSamples
@@ -445,9 +453,11 @@ def run_transitions(result, job: dict, json_path=None):
                        data_mode=data_mode, scan_number=scan_number)
 
     # --- exceptional point: Delta = 0 ---------------------------------------
+    # Delta of the EP pair, followed along λ: past the EP it stays on the two
+    # real poles that continue the pair, not on whichever two are closest.
     d_quantiles = d_med = d_lo = d_hi = None
     raw = result.poles.raw_samples
-    if raw is not None and raw.param_samples is not None:
+    if raw is not None:
         d_cross, d_med, d_lo, d_hi = discriminant_crossing_samples(
             raw, lambda_max=lambda_max, method=method, half_width=half_width,
         )
@@ -460,19 +470,21 @@ def run_transitions(result, job: dict, json_path=None):
         else:
             print("  EXCEPTIONAL PT  no bootstrap realization had a Delta crossing.")
     else:
-        print("  EXCEPTIONAL PT  no quadratic parameters stored — the discriminant "
+        print("  EXCEPTIONAL PT  no pole draws stored — the discriminant error bar "
               "needs a bootstrap/covariance run (n_boot >= 1).")
 
     lam_d = np.asarray(result.lambda_values, dtype=float)
     central = -result.poles.decay_rates + 1j * result.poles.frequencies
-    d_central = np.array([
-        discriminant_from_params(pack_pole_params(p), central.shape[1]) for p in central
-    ], dtype=float)
+    d_central = discriminant_from_poles(central)
     if lambda_max is not None:
         m = lam_d <= lambda_max
         lam_d, d_central = lam_d[m], d_central[m]
-    lam_ep, fit = linfit_zero_crossing(lam_d, d_central, half_width=half_width,
-                                       return_fit=True)
+    # Error bar of Delta = the 16/84 spread of the draws (None without them):
+    # it weights the line fit and is drawn on the points.
+    has_band = d_med is not None and len(d_med) == len(lam_d)
+    d_sigma = (d_hi - d_lo) / 2 if has_band else None
+    lam_ep, fit = linfit_zero_crossing(lam_d, d_central, sigma=d_sigma,
+                                       half_width=half_width, return_fit=True)
     first = find_zero_crossings(lam_d, d_central)
     if d_quantiles is not None:
         q16, q50, q84 = d_quantiles
@@ -481,13 +493,14 @@ def run_transitions(result, job: dict, json_path=None):
               f"{np.mean(np.isnan(transitions['delta_crossing_samples'])):.1%} without a crossing]")
     elif np.isfinite(lam_ep):
         print(f"  EXCEPTIONAL PT  lam_EP     = {lam_ep:.4f}  (no bootstrap draws — no error bar)")
-    print(f"                  ({method} on Delta; raw first sign change at "
+    print(f"                  ({'weighted ' if fit.get('weighted') else ''}{method} "
+          "on Delta; raw first sign change at "
           + (f"{first[0]:.4f})" if first else "none)"))
     if np.isfinite(lam_ep):
         transitions["delta_linfit_central"] = lam_ep
 
     if cfg["plot_discriminant"]:
-        band = (d_lo, d_hi) if (d_med is not None and len(d_med) == len(lam_d)) else (None, None)
+        band = (d_lo, d_hi) if has_band else (None, None)
         ax_d = plot_discriminant_curve(
             lam_d, d_central, fit=fit, lambda_ep=lam_ep,
             first_crossing=first[0] if first else None,

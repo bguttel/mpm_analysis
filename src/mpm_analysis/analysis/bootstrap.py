@@ -213,7 +213,7 @@ def bootstrap_ens_avg_measurements(
         "N_shots": int}`` as attached by ``EnsembleAverageLoader``.
     keys:
         Observable keys to reconstruct (``"D"``, ``"G"``, ``"B"``,
-        ``"error"``, ``"Z"`` = D − G) — the same mapping the loader's
+        ``"error"``, ``"Z"`` = D − G, ``"S"`` = D + G) — the same mapping the loader's
         extractors use on the real data.
     rng:
         Numpy random generator.
@@ -239,10 +239,12 @@ def bootstrap_ens_avg_measurements(
             rows.append(ch[key])
         elif key == "Z":
             rows.append(ch["D"] - ch["G"])
+        elif key == "S":                      # qubit-manifold survival D + G
+            rows.append(ch["D"] + ch["G"])
         else:
             raise KeyError(
                 f"bootstrap_ens_avg_measurements: no resampling rule for "
-                f"observable '{key}' (channels: {channels} + 'Z')."
+                f"observable '{key}' (channels: {channels} + 'Z', 'S')."
             )
     return np.vstack(rows)
 

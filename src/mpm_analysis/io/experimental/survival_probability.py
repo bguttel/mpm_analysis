@@ -17,7 +17,9 @@ PostSelectedLoader
     Matching is on the full run id (frequency *and* timestamp), so a table
     belonging to a different scan is never applied.  ``csv_path=False`` forces
     the stored JSON lambda; an explicit path is provenance-checked like any
-    other candidate.
+    other candidate.  An explicit per-drive table (``drive_khz`` +
+    ``gamma_BG_per_s_mean``, see :func:`_drive_gamma_ups`) calibrates the drive
+    rather than one run, so it is never discovered, only passed.
 
 EnsembleAverageLoader
     Folders of per-lambda JSON files from ensemble-average measurements.
@@ -126,11 +128,73 @@ def _load_csv_gamma_ups(csv_path: Path) -> dict[str, float]:
 
 
 _HMM_COLUMNS = ("filename", "Gamma_up_3_states_hmm")
+_DRIVE_COLUMNS = ("drive_khz", "gamma_BG_per_s_mean")
+
+
+def _is_drive_table(csv_path: Path) -> bool:
+    """True for a per-drive HMM table (columns :data:`_DRIVE_COLUMNS`)."""
+    try:
+        with open(win_long_path(csv_path), "r", newline="") as f:
+            header = next(csv.reader(f), [])
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return False
+    return all(c in header for c in _DRIVE_COLUMNS)
+
+
+def _drive_gamma_ups(csv_path: Path, folder: Path) -> dict[str, float]:
+    """Gamma_up (1/us) of every run in *folder* from a per-drive HMM table.
+
+    ``hmm_rates_per_drive.csv`` (offline three-state HMM of the alpha click
+    records) is keyed by drive amplitude, not by run: it calibrates the drive
+    itself, so it applies to any scan measured on the same drive points.  Each
+    file's drive (the kHz in its name) is looked up exactly — never
+    interpolated or extrapolated; a drive missing from the table raises.
+    """
+    with open(win_long_path(csv_path), "r", newline="") as f:
+        gamma = {int(float(r["drive_khz"])): float(r["gamma_BG_per_s_mean"]) * 1e-6
+                 for r in csv.DictReader(f)}
+    # Only data files carry a drive in their name; side files such as a
+    # combined folder's provenance.json are skipped by the loader anyway.
+    drives = {}
+    for p in _long_glob(folder, "*.json"):
+        try:
+            drives[_hmm_key(p.name)] = _khz_from_name(p)
+        except ValueError:
+            continue
+    missing = sorted({k for k in drives.values() if k not in gamma})
+    if missing:
+        raise HMMTableMismatch(
+            f"{csv_path.name} has no row for drives {missing} kHz of "
+            f"{folder.name} (table rows: {sorted(gamma)}); no interpolation."
+        )
+    return {key: gamma[k] for key, k in drives.items()}
+
+
+def _long_glob(folder: Path, pattern: str) -> list[Path]:
+    """``folder.glob(pattern)`` that survives Windows' 260-char listing limit.
+
+    Listing a directory appends a wildcard to its path, so a folder whose path
+    is only ~250 characters (e.g. ``scan_iteration/alpha_measurement`` deep in
+    the Dropbox tree) raises ``WinError 3`` although it exists.  The listing
+    goes through the extended-length form (:func:`win_long_path`); the
+    returned paths stay in normal form.  A folder that is missing or
+    unreadable yields no matches.
+    """
+    long = Path(win_long_path(folder))
+    try:
+        return sorted(folder / p.name for p in long.glob(pattern))
+    except OSError:
+        return []
+
+
+def _is_long_dir(folder: Path) -> bool:
+    """``folder.is_dir()`` that also works past the Windows path limit."""
+    return Path(win_long_path(folder)).is_dir()
 
 
 def _folder_runs(folder: Path) -> set[str]:
     """Run ids of every JSON in *folder* (see :func:`_hmm_key`)."""
-    return {_hmm_key(p.name) for p in folder.glob("*.json")}
+    return {_hmm_key(p.name) for p in _long_glob(folder, "*.json")}
 
 
 def _table_runs(csv_path: Path) -> set[str] | None:
@@ -171,16 +235,16 @@ def discover_hmm_table(folder: Path) -> Path | None:
         return None
 
     places = [folder, folder / "alpha_measurement"]
-    if folder.parent.exists():
-        for sib in sorted(folder.parent.iterdir()):
-            if sib.is_dir() and sib != folder:
+    if _is_long_dir(folder.parent):
+        for sib in _long_glob(folder.parent, "*"):
+            if _is_long_dir(sib) and sib != folder:
                 places += [sib, sib / "alpha_measurement"]
 
     scored: list[tuple[int, Path]] = []
     for place in places:
-        if not place.is_dir():
+        if not _is_long_dir(place):
             continue
-        for cand in sorted(place.glob("*.csv")):
+        for cand in _long_glob(place, "*.csv"):
             table = _table_runs(cand)
             if table and (n := len(table & runs)):
                 scored.append((n, cand))
@@ -203,6 +267,8 @@ def _resolve_hmm_table(setting, folder: Path) -> Path | None:
     ``"auto"``/``None`` discover, ``False`` forces the stored JSON lambda, and
     an explicit path is checked against the folder like any other candidate —
     a table from another scan raises instead of silently shifting lambda.
+    A per-drive table has no runs to check; its drives are checked when it
+    is read (:func:`_drive_gamma_ups`).
     """
     if setting is False:
         return None
@@ -210,6 +276,8 @@ def _resolve_hmm_table(setting, folder: Path) -> Path | None:
         return discover_hmm_table(folder)
 
     csv_path = Path(setting)
+    if _is_drive_table(csv_path):
+        return csv_path
     runs, table = _folder_runs(folder), _table_runs(csv_path)
     if table is None:
         raise HMMTableMismatch(
@@ -237,8 +305,12 @@ def _resolve_lambda(loader, jd: dict, fp: Path) -> float:
     """
     if not loader._resolved:
         loader._csv_path = _resolve_hmm_table(loader._csv_setting, fp.parent)
-        loader._gamma_ups = (_load_csv_gamma_ups(loader._csv_path)
-                             if loader._csv_path is not None else None)
+        if loader._csv_path is None:
+            loader._gamma_ups = None
+        elif _is_drive_table(loader._csv_path):
+            loader._gamma_ups = _drive_gamma_ups(loader._csv_path, fp.parent)
+        else:
+            loader._gamma_ups = _load_csv_gamma_ups(loader._csv_path)
         loader._resolved = True
         if loader._csv_path is None:
             print(f"[lambda] {fp.parent.name}: stored lambda_zeno_estimation "
@@ -273,7 +345,9 @@ class PostSelectedLoader(ExperimentalLoader):
         ``Gamma_up_3_states_hmm``).  When given, lambda is computed as
         ``Gamma_up / (2 * Omega_DG * 1e-6)`` — the updated, HMM-calibrated
         lambda scale.  When omitted, falls back to
-        ``parameters.lambda_zeno_estimation`` in each JSON.
+        ``parameters.lambda_zeno_estimation`` in each JSON.  A per-drive
+        table (``drive_khz``, ``gamma_BG_per_s_mean``) is looked up at each
+        file's drive instead (:func:`_drive_gamma_ups`).
 
     Default observables registered:
         ``"survival"``      <- ``data.p_0_t_array``

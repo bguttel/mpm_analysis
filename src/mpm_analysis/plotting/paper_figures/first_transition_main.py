@@ -92,10 +92,9 @@ def plot_first_transition_figure(
 
     from mpm_analysis.analysis.ksi_crossing import (
         discriminant_crossing_samples,
-        discriminant_from_params,
+        discriminant_from_poles,
         linfit_zero_crossing,
     )
-    from mpm_analysis.analysis.matrix_pencil import pack_pole_params
     from mpm_analysis.plotting._style import (
         TWO_COLUMN_WIDTH, LABELS_FONT_SIZE, MARKER_SIZE, LINE_WIDTH,
         LAMBDA_OBS_COLOR, add_panel_letter, apply_paper_style,
@@ -118,21 +117,16 @@ def plot_first_transition_figure(
     r_lower = poles.decay_rates_lower / omega_s
     r_upper = poles.decay_rates_upper / omega_s
 
-    # Discriminant of the first quadratic pair from the central poles,
-    # normalized by Ω_S² (poles enter Δ quadratically).
+    # Discriminant of the EP pair (followed along λ past the EP) from the
+    # central poles, normalized by Ω_S² (poles enter Δ quadratically).
     central = -poles.decay_rates + 1j * poles.frequencies
-    order = central.shape[1]
-    delta = np.array([
-        discriminant_from_params(pack_pole_params(p), order) for p in central
-    ], dtype=float) / omega_s**2
-    lam_ep, dfit = linfit_zero_crossing(
-        lambdas, delta, half_width=discriminant_half_width, return_fit=True,
-    )
+    delta = discriminant_from_poles(central) / omega_s**2
 
-    # 16/84 bootstrap band on Δ, when raw samples were kept
-    yerr = None
+    # 16/84 bootstrap band on Δ, when raw samples were kept: the error bars
+    # of the points and the weights of the line fit.
+    yerr = sigma = None
     raw = result.poles.raw_samples
-    if raw is not None and raw.param_samples is not None:
+    if raw is not None:
         _, d_med, d_lo, d_hi = discriminant_crossing_samples(
             raw, lambda_max=lambda_max, half_width=discriminant_half_width,
         )
@@ -141,6 +135,11 @@ def plot_first_transition_figure(
             d_hi = np.asarray(d_hi, dtype=float) / omega_s**2
             yerr = [np.clip(delta - d_lo, 0.0, None),
                     np.clip(d_hi - delta, 0.0, None)]
+            sigma = (d_hi - d_lo) / 2
+    lam_ep, dfit = linfit_zero_crossing(
+        lambdas, delta, sigma=sigma, half_width=discriminant_half_width,
+        return_fit=True,
+    )
 
     # --- Figure layout: A (spectrum) over B (discriminant) ---
     fig_w = float(TWO_COLUMN_WIDTH) * 0.67

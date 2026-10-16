@@ -340,10 +340,9 @@ from mpm_analysis.pipeline.critical_point_pipeline import CriticalPointPipeline
 from mpm_analysis.pipeline.benchmark_pipeline import BenchmarkPipeline
 from mpm_analysis.analysis.steps import MPMStep, BootstrapStep, MPMRRHAStep, RefineStep
 from mpm_analysis.analysis.ksi_crossing import (
-    KsiCrossingPipeline, discriminant_crossing_samples, discriminant_from_params,
+    KsiCrossingPipeline, discriminant_crossing_samples, discriminant_from_poles,
     linfit_zero_crossing, find_zero_crossings,
 )
-from mpm_analysis.analysis.matrix_pencil import pack_pole_params
 from mpm_analysis.analysis.critical_point import fit_sqrt_per_realization
 from mpm_analysis.data_types.pole_samples import PoleSamples
 from mpm_analysis.plotting.ksi_plot import plot_ksi_curve, plot_discriminant_curve
@@ -645,15 +644,16 @@ def run_transitions(result, json_path=None):
 
     lam_d = np.asarray(result.lambda_values, dtype=float)
     central = -result.poles.decay_rates + 1j * result.poles.frequencies
-    order = central.shape[1]
-    d_central = np.array([
-        discriminant_from_params(pack_pole_params(p), order) for p in central
-    ], dtype=float)
+    d_central = discriminant_from_poles(central)   # EP pair followed along λ
     if TRANSITION_LAMBDA_MAX is not None:
         m = lam_d <= TRANSITION_LAMBDA_MAX
         lam_d, d_central = lam_d[m], d_central[m]
+    # the 16/84 spread of the draws weights the line fit (None without draws)
+    d_sigma = ((d_hi - d_lo) / 2 if d_med is not None and len(d_med) == len(lam_d)
+               else None)
     lam_ep, fit = linfit_zero_crossing(
-        lam_d, d_central, half_width=DISCRIMINANT_HALFWIDTH, return_fit=True
+        lam_d, d_central, sigma=d_sigma, half_width=DISCRIMINANT_HALFWIDTH,
+        return_fit=True,
     )
     first = find_zero_crossings(lam_d, d_central)
     # agent1: dump the CENTRAL (unresampled) poles and discriminant for comparison

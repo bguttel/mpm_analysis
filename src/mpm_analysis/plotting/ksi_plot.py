@@ -184,7 +184,8 @@ def plot_discriminant_curve(
         xs = np.linspace(lam[w].min(), lam[w].max(), 50)
         ax.plot(xs, np.polyval(fit["coef"], xs), color="k", linestyle="--",
                 linewidth=lw, zorder=11,
-                label=rf"line fit ({int(w.sum())} pts in $\pm${fit['half_width']:.2f})")
+                label=(("weighted " if fit.get("weighted") else "")
+                       + rf"line fit ({int(w.sum())} pts in $\pm${fit['half_width']:.2f})"))
 
     if crossing_quantiles is not None:
         q16, _, q84 = crossing_quantiles

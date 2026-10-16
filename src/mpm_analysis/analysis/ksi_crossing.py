@@ -192,6 +192,7 @@ def linfit_zero_crossing(
     lambdas: np.ndarray,
     values: np.ndarray,
     *,
+    sigma: np.ndarray | None = None,
     half_width: float = 0.15,
     n_refits: int = 2,
     direction: str = "any",
@@ -208,6 +209,11 @@ def linfit_zero_crossing(
     ----------
     lambdas, values:
         The curve, e.g. λ and ``Delta(λ)``.
+    sigma:
+        1-σ error bar of ``values`` (same shape).  The line is then a weighted
+        least-squares fit (weights 1/σ²); a point whose σ is missing or zero
+        gets the median σ of the window.  ``None`` → every point weighs the
+        same.
     half_width:
         Half-width in λ of the fit window.
     n_refits:
@@ -216,8 +222,8 @@ def linfit_zero_crossing(
         Passed to :func:`find_zero_crossings` for the seed.
     return_fit:
         Also return ``dict(coef=[slope, intercept], window=bool mask,
-        half_width=...)`` of the last accepted fit (``coef`` is ``None`` when
-        the fit failed) — for plotting.
+        half_width=..., weighted=bool)`` of the last accepted fit (``coef``
+        is ``None`` when the fit failed) — for plotting.
 
     Returns
     -------
@@ -226,6 +232,7 @@ def linfit_zero_crossing(
     """
     lam = np.asarray(lambdas, dtype=float)
     val = np.asarray(values, dtype=float)
+    sig = None if sigma is None else np.asarray(sigma, dtype=float)
     cross = find_zero_crossings(lam, val, direction=direction)
     x0 = cross[0] if cross else np.nan
     fit = None
@@ -234,14 +241,22 @@ def linfit_zero_crossing(
             break
         w = (np.abs(lam - x0) <= half_width) & np.isfinite(val)
         if w.sum() >= 5:
-            coef = np.polyfit(lam[w], val[w], 1)
-            fit = dict(coef=coef, window=w, half_width=half_width)
+            weights = None
+            if sig is not None:
+                s = sig[w]
+                ok = np.isfinite(s) & (s > 0)
+                if ok.any():
+                    weights = 1.0 / np.where(ok, s, np.median(s[ok]))
+            coef = np.polyfit(lam[w], val[w], 1, w=weights)
+            fit = dict(coef=coef, window=w, half_width=half_width,
+                       weighted=weights is not None)
             x0 = -coef[1] / coef[0] if coef[0] != 0 else np.nan
         else:
             x0 = np.nan
     x0 = float(x0)
     if return_fit:
-        return x0, (fit or dict(coef=None, window=None, half_width=half_width))
+        return x0, (fit or dict(coef=None, window=None, half_width=half_width,
+                                weighted=False))
     return x0
 
 
@@ -317,6 +332,11 @@ def discriminant_from_params(params: np.ndarray, order: int) -> np.ndarray:
     ``params`` follows the ``pack_pole_params`` layout
     ``[r..., c1_1, c0_1, ...]``; any leading axes are preserved.
 
+    Not the EP diagnostic past the EP: ``pack_pole_params`` pairs the two
+    *closest* poles at each λ, and once all poles are real that can be the
+    slow EP branch with the steady-state pole — Delta then tracks that one
+    pole.  Use :func:`discriminant_from_poles` on the λ scan instead.
+
     Sign convention::
 
         Delta < 0  ->  complex-conjugate pair
@@ -330,6 +350,77 @@ def discriminant_from_params(params: np.ndarray, order: int) -> np.ndarray:
     return c1 * c1 - 4.0 * c0
 
 
+def _ep_pair_delta(P: np.ndarray) -> np.ndarray:
+    """Delta along one λ scan ``P`` of shape (n_lambda, order)."""
+    from itertools import permutations
+
+    n, order = P.shape
+    I, J = np.triu_indices(order, k=1)
+    rest = [np.setdiff1d(np.arange(order), [i, j]) for i, j in zip(I, J)]
+    im = P.imag
+    conj = (im[:, I] * im[:, J] < 0) & (np.minimum(np.abs(im[:, I]), np.abs(im[:, J])) > 1e-9)
+    # A complex pole without a conjugate partner is aliased (Im = π/dt): that
+    # pole set has lost a branch and has no EP pair.
+    paired = np.zeros((n, order), dtype=bool)
+    for k in range(len(I)):
+        paired[:, I[k]] |= conj[:, k]
+        paired[:, J[k]] |= conj[:, k]
+    unpaired = ((np.abs(im) > 1e-9) & ~paired).any(axis=1)
+    rows = np.flatnonzero(np.all(np.isfinite(P), axis=1) & ~unpaired)
+    delta = np.full(n, np.nan)
+    if len(rows) == 0 or len(I) == 0:
+        return delta
+
+    def pick(r, ref):
+        if ref is None:                         # pack_pole_params' pairing
+            cost = np.abs(P[r, I] - np.conj(P[r, J]))
+        else:                                   # the non-pair poles move on smoothly
+            cost = np.array([min(np.abs(P[r, L[list(s)]] - ref).sum()
+                                 for s in permutations(range(len(L))))
+                             for L in rest])
+        if conj[r].any():
+            cost = np.where(conj[r], cost, np.inf)
+        k = int(np.argmin(cost))
+        delta[r] = np.real((P[r, I[k]] - P[r, J[k]]) ** 2)
+        return P[r, rest[k]]
+
+    # Seed on the first λ with a conjugate pair, then continue outwards.
+    has_conj = conj[rows].any(axis=1)
+    start = rows[np.argmax(has_conj)] if has_conj.any() else rows[0]
+    ref = seed = pick(start, None)
+    for r in rows[rows > start]:
+        ref = pick(r, ref)
+    ref = seed
+    for r in rows[rows < start][::-1]:
+        ref = pick(r, ref)
+    return delta
+
+
+def discriminant_from_poles(poles: np.ndarray) -> np.ndarray:
+    """Discriminant ``Delta = c1**2 - 4*c0 = (s_i - s_j)**2`` of the EP pair.
+
+    ``poles`` is a λ scan: complex, shape (n_lambda, order) or
+    (n_lambda, ..., order) — every other leading axis (e.g. bootstrap draws)
+    is a separate scan.  At each λ the EP pair is the complex-conjugate pair
+    when there is one; past the EP, where all poles are real, it is what is
+    left after following the other pole(s) — smooth through the EP, unlike
+    the pair — from the neighbouring λ.  Per-λ proximity cannot tell them
+    apart there (the slow EP branch can sit closer to the steady-state pole
+    than to its partner), and slot labels from the upstream tracking are not
+    relied on.
+
+    For a conjugate pair ``a ± ib`` Delta is ``-4 b**2``, for two real poles
+    their squared distance; same sign convention as
+    :func:`discriminant_from_params`.  NaN where a pole is missing or aliased
+    (complex without a conjugate partner, i.e. at Im = π/dt).
+    """
+    P = np.asarray(poles, dtype=complex)
+    shape = P.shape[:-1]
+    flat = P.reshape(P.shape[0], -1, P.shape[-1])
+    delta = np.stack([_ep_pair_delta(flat[:, k]) for k in range(flat.shape[1])], axis=1)
+    return delta.reshape(shape)
+
+
 def discriminant_crossing_samples(
     samples,
     *,
@@ -341,15 +432,16 @@ def discriminant_crossing_samples(
     """Per-realization zero crossing of the discriminant ``Delta(lambda)``.
 
     The preferred EP diagnostic: for each bootstrap realization ``b``,
-    compute ``Delta(lambda) = c1**2 - 4*c0`` from the fitted quadratic
-    parameters and locate its first zero crossing — the transition between
-    the oscillating (``Delta < 0``) and purely-decaying (``Delta > 0``)
-    regimes.
+    compute ``Delta(lambda) = c1**2 - 4*c0`` of the EP pair and locate its
+    first zero crossing — the transition between the oscillating
+    (``Delta < 0``) and purely-decaying (``Delta > 0``) regimes.  Delta comes
+    from each draw's pole scan (:func:`discriminant_from_poles`), not from
+    ``param_samples``, whose per-λ pairing leaves the EP pair past the EP.
 
     Parameters
     ----------
     samples:
-        A ``PoleSamples`` with ``param_samples`` (n_lambda, n_boot, n_par).
+        A ``PoleSamples`` (``samples`` complex, (n_lambda, n_boot, order)).
     lambda_max:
         Restrict the analysis to λ ≤ lambda_max.
     direction:
@@ -357,8 +449,9 @@ def discriminant_crossing_samples(
     method:
         ``"first"`` (default) records the first sign change of each
         realization; ``"linfit"`` records the zero of a straight line fitted
-        around it (:func:`linfit_zero_crossing`), which is the less biased
-        estimator when Delta is linear through the EP.
+        around it (:func:`linfit_zero_crossing`, weighted by the per-λ 16/84
+        spread of the draws), which is the less biased estimator when Delta
+        is linear through the EP.
     half_width:
         Fit half-window in λ, used by ``method="linfit"``.
 
@@ -371,38 +464,35 @@ def discriminant_crossing_samples(
     """
     if method not in ("first", "linfit"):
         raise ValueError(f"discriminant_crossing_samples: unknown method '{method}'.")
-    if samples.param_samples is None:
-        raise ValueError(
-            "discriminant_crossing_samples: samples.param_samples is None — "
-            "run a bootstrap/covariance mode that stores quadratic parameters."
-        )
     lam = samples.lambda_values
-    params = samples.param_samples             # (n_lambda, n_boot, n_par)
+    poles = samples.samples                    # (n_lambda, n_boot, order)
     if lambda_max is not None:
         m = lam <= lambda_max
         lam = lam[m]
-        params = params[m]
+        poles = poles[m]
 
-    order = samples.order
-    delta = discriminant_from_params(params, order)   # (n_lambda, n_boot)
-    n_boot = delta.shape[1]
-    crossings = np.full(n_boot, np.nan)
-    for b in range(n_boot):
-        if method == "linfit":
-            crossings[b] = linfit_zero_crossing(
-                lam, delta[:, b], half_width=half_width, direction=direction
-            )
-        else:
-            cross_b = find_zero_crossings(lam, delta[:, b], direction=direction)
-            if cross_b:
-                crossings[b] = cross_b[0]
-
+    delta = discriminant_from_poles(poles)            # (n_lambda, n_boot)
     # All-NaN lambda slices are expected (failed draws) — summarise quietly.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         delta_med = np.nanmedian(delta, axis=1)
         delta_lo = np.nanpercentile(delta, 16.0, axis=1)
         delta_hi = np.nanpercentile(delta, 84.0, axis=1)
+    # The per-λ spread of the draws is the error bar of Delta; it weights the
+    # line fit of every draw the same way (a bootstrap of the weighted fit).
+    sigma = (delta_hi - delta_lo) / 2.0
+    n_boot = delta.shape[1]
+    crossings = np.full(n_boot, np.nan)
+    for b in range(n_boot):
+        if method == "linfit":
+            crossings[b] = linfit_zero_crossing(
+                lam, delta[:, b], sigma=sigma, half_width=half_width,
+                direction=direction,
+            )
+        else:
+            cross_b = find_zero_crossings(lam, delta[:, b], direction=direction)
+            if cross_b:
+                crossings[b] = cross_b[0]
     return crossings, delta_med, delta_lo, delta_hi
 
 

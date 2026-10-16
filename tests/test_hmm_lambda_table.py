@@ -131,3 +131,28 @@ def test_non_hmm_csv_is_ignored(tmp_path):
         w.writerow(["", "Omega_BG0"])
         w.writerow([0, 6.3])
     assert discover_hmm_table(mine) is None
+
+
+def _write_drive_table(path, khz, gamma_per_s):
+    """A per-drive table, as hmm_rates_per_drive.csv (Gamma_up in 1/s)."""
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["drive_khz", "gamma_BG_per_s_mean"])
+        w.writerows(zip(khz, gamma_per_s))
+
+
+def test_drive_table_exact_lookup(tmp_path):
+    """Keyed by drive, not run: exact lookup at each file's drive, explicit only."""
+    mine = _write_scan(tmp_path / "scan_0", MINE, lam_json=0.5)   # 1020, 1035 kHz
+    table = mine / "hmm_rates_per_drive.csv"
+    _write_drive_table(table, [1020, 1035, 1100], [1e6, 2e6, 3e6])
+
+    assert discover_hmm_table(mine) is None
+    records = EnsembleAverageLoader(csv_path=table).load(mine, observables=["D"])
+    assert sorted({r.lambda_val for r in records}) == pytest.approx(
+        [1.0 / (2 * OMEGA_DG_MHZ), 2.0 / (2 * OMEGA_DG_MHZ)]
+    )
+
+    _write_drive_table(table, [1000, 1035, 1100], [1e6, 2e6, 3e6])   # 1020 missing
+    with pytest.raises(HMMTableMismatch, match="no row for drives \[1020\]"):
+        EnsembleAverageLoader(csv_path=table).load(mine, observables=["D"])

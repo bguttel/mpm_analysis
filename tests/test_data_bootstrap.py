@@ -20,8 +20,11 @@ from mpm_analysis.analysis.bootstrap import (
 )
 from mpm_analysis.analysis.ksi_crossing import (
     discriminant_from_params,
+    discriminant_from_poles,
     discriminant_crossing_samples,
+    linfit_zero_crossing,
 )
+from mpm_analysis.analysis.matrix_pencil import pack_pole_params, unpack_pole_params
 from mpm_analysis.data_types.observables import ObservableRecord
 from mpm_analysis.data_types.pole_samples import PoleSamples
 
@@ -339,9 +342,9 @@ def test_discriminant_crossing_samples():
         params[:, b, 0] = -0.5
         params[:, b, 1] = c1
         params[:, b, 2] = c0
+    poles = np.array([[unpack_pole_params(p, 3) for p in row] for row in params])
     samples = PoleSamples(
-        samples=np.zeros((len(lams), n_boot, 3), dtype=complex),
-        observable_key="survival", lambda_values=lams,
+        samples=poles, observable_key="survival", lambda_values=lams,
         param_samples=params,
     )
     crossings, d_med, d_lo, d_hi = discriminant_crossing_samples(samples)
@@ -349,6 +352,55 @@ def test_discriminant_crossing_samples():
     assert abs(q50 - 0.6) < 0.02
     assert q16 < q50 < q84
     assert np.all(d_lo[np.isfinite(d_lo)] <= d_hi[np.isfinite(d_hi)])
+    assert np.allclose(discriminant_from_poles(poles),
+                       discriminant_from_params(params, 3))
+
+
+def test_linfit_zero_crossing_uses_error_bars():
+    # straight line through 0.5 with one wild point carrying a huge error bar
+    lams = np.linspace(0, 1, 21)
+    vals = lams - 0.5
+    vals[9] = 0.5                                   # lam = 0.45
+    sigma = np.full(len(lams), 0.01)
+    sigma[9] = 100.0
+    unweighted = linfit_zero_crossing(lams, vals, half_width=0.15)
+    weighted, fit = linfit_zero_crossing(lams, vals, sigma=sigma,
+                                         half_width=0.15, return_fit=True)
+    assert fit["weighted"] and abs(weighted - 0.5) < 1e-3
+    assert abs(unweighted - 0.5) > 0.02
+
+
+def test_discriminant_stays_on_ep_pair_past_the_ep():
+    # ens_avg-like: steady-state pole ~0 plus the EP pair.  Past the EP the
+    # slow branch drifts towards 0 and ends up closer to the steady-state
+    # pole than to its partner; Delta must still be the pair's — whatever
+    # order the poles come in at each λ.
+    lams = np.linspace(0.5, 1.7, 49)
+    delta_true = 0.8 * (lams - 1.1)
+    root = np.sqrt(np.abs(delta_true)) / 2
+    pair_lo = np.where(delta_true < 0, -0.45 - 1j * root, -0.45 - root)
+    pair_hi = np.where(delta_true < 0, -0.45 + 1j * root, -0.45 + root)
+    poles = np.stack([pair_hi, pair_lo, np.full(len(lams), -0.001 + 0j)], axis=1)
+    rng = np.random.default_rng(3)
+    poles = np.array([p[rng.permutation(3)] for p in poles])   # slot labels hop
+
+    assert np.allclose(discriminant_from_poles(poles), delta_true)
+    # a Nyquist-aliased pole (no conjugate partner) leaves no EP pair: NaN
+    aliased = poles.copy()
+    aliased[-1] = [-1.2 + 0j, -6.4 + 15.708j, -0.17 + 0j]
+    d_alias = discriminant_from_poles(aliased)
+    assert np.isnan(d_alias[-1]) and np.allclose(d_alias[:-1], delta_true[:-1])
+    # the per-λ greedy pairing is what drifts off the EP pair
+    greedy = np.array([discriminant_from_params(pack_pole_params(p), 3) for p in poles])
+    assert not np.allclose(greedy[lams > 1.5], delta_true[lams > 1.5])
+
+    n_boot = 50
+    draws = poles[:, None, :] + 0.002 * rng.standard_normal((len(lams), n_boot, 3))
+    samples = PoleSamples(samples=draws, observable_key="D", lambda_values=lams)
+    crossings, d_med, _, _ = discriminant_crossing_samples(
+        samples, method="linfit", half_width=0.15)
+    assert abs(np.nanmedian(crossings) - 1.1) < 0.01
+    assert np.allclose(d_med, delta_true, atol=0.01)
 
 
 # ---------------------------------------------------------------------------

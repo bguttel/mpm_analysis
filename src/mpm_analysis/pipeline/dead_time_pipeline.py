@@ -234,21 +234,15 @@ def _transitions(lambdas: np.ndarray, poles: np.ndarray, *,
                  half_width: float, lambda_max: float | None):
     """``(delta, lambda_ep, lambda_ep_first)`` from central poles.
 
-    The same recipe as ``run.py``'s ``run_transitions``: ``Delta`` from the
-    real-quadratic parameters of each pole set, its straight-line zero and
-    raw first sign change.
+    The same recipe as ``run.py``'s ``run_transitions``: ``Delta`` of the EP
+    pair (followed along λ past the EP), its straight-line zero and raw
+    first sign change.
     """
     from mpm_analysis.analysis.ksi_crossing import (
-        discriminant_from_params, find_zero_crossings, linfit_zero_crossing,
+        discriminant_from_poles, find_zero_crossings, linfit_zero_crossing,
     )
-    from mpm_analysis.analysis.matrix_pencil import pack_pole_params
 
-    order = poles.shape[1]
-    delta = np.array([
-        discriminant_from_params(pack_pole_params(p), order)
-        if np.all(np.isfinite(p)) else np.nan
-        for p in poles
-    ], dtype=float)
+    delta = discriminant_from_poles(poles)
     lam, d = np.asarray(lambdas, dtype=float), delta
     if lambda_max is not None:
         m = lam <= lambda_max
