@@ -20,6 +20,7 @@ Adding a new computer
 3. Also add the same entry to ``ZenoPlotting/src/zeno_plotting/base.py``
    so both packages stay in sync.
 """
+
 from __future__ import annotations
 
 import socket
@@ -39,6 +40,10 @@ _DROPBOX_ROOTS: dict[str, Path] = {
     "CMD-SRStudent1": Path(
         r"E:\Weizmann Institute Dropbox\Barkay Guttel\Quantum Circuits Lab"
     ),
+    # Barkay's new student laptop
+    "CS-TM-LT2": Path(
+        r"C:\Users\barkayg\Weizmann Institute Dropbox\Barkay Guttel\Quantum Circuits Lab"
+    ),
     # Serge's Lenovo PC (E: drive)
     "cmd-SRLenovoPc2": Path(
         r"E:\Weizmann Institute Dropbox\Serge Rosenblum\Quantum Circuits Lab"
@@ -47,7 +52,7 @@ _DROPBOX_ROOTS: dict[str, Path] = {
 
 # Sub-paths that are the same on every machine
 CAVITY_STR = "CavityRecAl6"
-CHIP_STR   = "Chip_TransSap46_5"
+CHIP_STR = "Chip_TransSap46_5"
 
 
 def get_dropbox_root() -> Path:
@@ -67,7 +72,7 @@ def get_dropbox_root() -> Path:
             f"Add it to mpm_analysis/src/mpm_analysis/utils/lab_paths.py "
             f"(and to ZenoPlotting/src/zeno_plotting/base.py). "
             f"Known hosts: {list(_DROPBOX_ROOTS)}. "
-            f"To find your hostname: python -c \"import socket; print(socket.gethostname())\""
+            f'To find your hostname: python -c "import socket; print(socket.gethostname())"'
         )
     return root
 

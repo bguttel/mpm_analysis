@@ -15,26 +15,29 @@ Design intent (see the commented-out caption at the bottom):
 The 3-vs-2 overlap is made visible with complementary dash phases drawn over a
 thicker solid branch, so every coincident curve shows its own colour.
 """
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator
+
 from itertools import permutations
 from pathlib import Path
-import textwrap
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.ticker import MultipleLocator
 
 from mpm_analysis.plotting._style import (
-    TWO_COLUMN_WIDTH,
-    LABELS_FONT_SIZE,
-    LINE_WIDTH,
     DPI,
+    FIT_LINESTYLE,
+    LABELS_FONT_SIZE,
+    LAMBDA_OBS_COLOR,
+    LINE_WIDTH,
+    MUSTARD,
     PURPLE_MAGENTA,
     TEAL,
-    MUSTARD,
-    LAMBDA_OBS_COLOR,
-    FIT_LINESTYLE,
+    TWO_COLUMN_WIDTH,
     make_ax_lines_wider,
 )
+
 LABELS_FONT_SIZE *= 1.5
+LEGEND_FONT_SIZE = LABELS_FONT_SIZE / 1.3
 LINE_WIDTH *= 1.5
 
 # ============================================================
@@ -52,37 +55,39 @@ NPTS = 2000
 # Physical parameters from the paper
 # ============================================================
 
-Omega_S = 2 * np.pi * 100e3   # 100 kHz
-Tphi_S = 26e-6                # 26 microseconds
-T1_S   = 93e-6                # 93 microseconds
+Omega_S = 2 * np.pi * 100e3  # 100 kHz
+Tphi_S = 26e-6  # 26 microseconds
+T1_S = 93e-6  # 93 microseconds
 
 gamma_phi = 1.0 / (Omega_S * Tphi_S)
-gamma1    = 1.0 / (Omega_S * T1_S)
+gamma1 = 1.0 / (Omega_S * T1_S)
 
 # ============================================================
 # Matplotlib style -- paper defaults
 # ============================================================
 
-plt.rcParams.update({
-    "text.usetex": False,
-    "mathtext.fontset": "cm",
-    "font.family": "sans-serif",
-    "font.size": LABELS_FONT_SIZE,
-    "axes.labelsize": LABELS_FONT_SIZE,
-    "axes.titlesize": LABELS_FONT_SIZE,
-    "legend.fontsize": LABELS_FONT_SIZE - 1,
-    "xtick.labelsize": LABELS_FONT_SIZE - 1,
-    "ytick.labelsize": LABELS_FONT_SIZE - 1,
-    "axes.linewidth": LINE_WIDTH,
-    "xtick.major.width": LINE_WIDTH,
-    "ytick.major.width": LINE_WIDTH,
-    "lines.linewidth": LINE_WIDTH,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "svg.fonttype": "none",
-    "savefig.dpi": DPI,
-    "figure.dpi": 300,
-})
+plt.rcParams.update(
+    {
+        "text.usetex": False,
+        "mathtext.fontset": "cm",
+        "font.family": "sans-serif",
+        "font.size": LABELS_FONT_SIZE,
+        "axes.labelsize": LABELS_FONT_SIZE,
+        "axes.titlesize": LABELS_FONT_SIZE,
+        "legend.fontsize": LABELS_FONT_SIZE - 1,
+        "xtick.labelsize": LABELS_FONT_SIZE - 1,
+        "ytick.labelsize": LABELS_FONT_SIZE - 1,
+        "axes.linewidth": LINE_WIDTH,
+        "xtick.major.width": LINE_WIDTH,
+        "ytick.major.width": LINE_WIDTH,
+        "lines.linewidth": LINE_WIDTH,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "svg.fonttype": "none",
+        "savefig.dpi": DPI,
+        "figure.dpi": 300,
+    }
+)
 
 # Paper palette (ThirdTransitionFigureColors), consistent with the
 # first-transition figure: e1 -> magenta, e2 -> teal, e3 -> mustard.
@@ -110,13 +115,14 @@ colors = {
 # shared segment reads as a repeating mustard / teal / magenta rainbow.
 DASH_PERIOD = 9.0
 DASH_ON = 3.0
-DASH_E3 = (0.0, (DASH_ON, DASH_PERIOD - DASH_ON))              # mustard slot
-DASH_E2 = (DASH_ON, (DASH_ON, DASH_PERIOD - DASH_ON))          # teal slot
+DASH_E3 = (0.0, (DASH_ON, DASH_PERIOD - DASH_ON))  # mustard slot
+DASH_E2 = (DASH_ON, (DASH_ON, DASH_PERIOD - DASH_ON))  # teal slot
 # the remaining third of every period is left to the magenta e1 underneath
 
 # ============================================================
 # Model
 # ============================================================
+
 
 def L_postselected(lam, gamma_phi=0.0, gamma1=0.0, Omega=1.0):
     """
@@ -126,11 +132,15 @@ def L_postselected(lam, gamma_phi=0.0, gamma1=0.0, Omega=1.0):
     alpha_half = lam * Omega
     gamma2 = gamma_phi + 0.5 * gamma1
 
-    return np.array([
-        [-alpha_half,          0.0,               alpha_half],
-        [0.0,         -(gamma2 + alpha_half),     Omega     ],
-        [alpha_half - gamma1,  -Omega,     -(alpha_half + gamma1)]
-    ], dtype=complex)
+    return np.array(
+        [
+            [-alpha_half, 0.0, alpha_half],
+            [0.0, -(gamma2 + alpha_half), Omega],
+            [alpha_half - gamma1, -Omega, -(alpha_half + gamma1)],
+        ],
+        dtype=complex,
+    )
+
 
 def track_branches(lams, gamma_phi=0.0, gamma1=0.0, Omega=1.0):
     """
@@ -161,7 +171,8 @@ def track_branches(lams, gamma_phi=0.0, gamma1=0.0, Omega=1.0):
         prev = best
         tracked.append(prev.copy())
 
-    return np.array(tracked)   # shape (N, 3)
+    return np.array(tracked)  # shape (N, 3)
+
 
 def eig_sorted_by_real(lams, gamma_phi=0.0, gamma1=0.0, Omega=1.0):
     """
@@ -180,13 +191,16 @@ def eig_sorted_by_real(lams, gamma_phi=0.0, gamma1=0.0, Omega=1.0):
         vals = np.linalg.eigvals(L_postselected(lam, gamma_phi, gamma1, Omega))
         # round the tie keys so branches separated only by round-off still
         # count as degenerate
-        order = np.lexsort((
-            -np.round(np.imag(vals), 9),        # last resort: +Im before -Im
-            np.round(np.abs(np.imag(vals)), 9),  # then: most-real branch first
-            -np.round(np.real(vals), 9),         # primary: slowest decay first
-        ))
+        order = np.lexsort(
+            (
+                -np.round(np.imag(vals), 9),  # last resort: +Im before -Im
+                np.round(np.abs(np.imag(vals)), 9),  # then: most-real branch first
+                -np.round(np.real(vals), 9),  # primary: slowest decay first
+            )
+        )
         out.append(vals[order])
     return np.array(out)
+
 
 def find_lambda1(lams, gamma_phi=0.0, gamma1=0.0):
     """
@@ -210,6 +224,7 @@ def find_lambda1(lams, gamma_phi=0.0, gamma1=0.0):
 
     # linear interpolation
     return x0 + (0.0 - y0) * (x1 - x0) / (y1 - y0)
+
 
 def find_lambda2(lams, gamma_phi=0.0, gamma1=0.0, lam1=None):
     """
@@ -242,6 +257,7 @@ def find_lambda2(lams, gamma_phi=0.0, gamma1=0.0, lam1=None):
         return roots_below[-1]
     return roots[-1]
 
+
 # ============================================================
 # Compute spectra
 # ============================================================
@@ -249,10 +265,10 @@ def find_lambda2(lams, gamma_phi=0.0, gamma1=0.0, lam1=None):
 lams = np.linspace(LAMBDA_MIN, LAMBDA_MAX, NPTS)
 
 ideal_tr = track_branches(lams, gamma_phi=0.0, gamma1=0.0)
-real_tr  = track_branches(lams, gamma_phi=gamma_phi, gamma1=gamma1)
+real_tr = track_branches(lams, gamma_phi=gamma_phi, gamma1=gamma1)
 
 ideal_sorted = eig_sorted_by_real(lams, gamma_phi=0.0, gamma1=0.0)
-real_sorted  = eig_sorted_by_real(lams, gamma_phi=gamma_phi, gamma1=gamma1)
+real_sorted = eig_sorted_by_real(lams, gamma_phi=gamma_phi, gamma1=gamma1)
 
 lam1_ideal = 1.0
 lam2_ideal = 2.0 / np.sqrt(3.0)
@@ -264,19 +280,40 @@ lam2_real = find_lambda2(lams, gamma_phi=gamma_phi, gamma1=gamma1, lam1=lam1_rea
 # Helpers
 # ============================================================
 
+
 def add_lambda_marker(ax, lam):
     """Star marker sitting on the x-axis spine (paper idiom)."""
-    ax.plot(lam, 0.0, transform=ax.get_xaxis_transform(),
-            marker="*", color=LAMBDA_OBS_COLOR, markersize=10.0,
-            clip_on=False, zorder=100, ls="none")
+    ax.plot(
+        lam,
+        0.0,
+        transform=ax.get_xaxis_transform(),
+        marker="*",
+        color=LAMBDA_OBS_COLOR,
+        markersize=10.0,
+        clip_on=False,
+        zorder=100,
+        ls="none",
+    )
 
 
 def add_critical_lines(ax, lam1, lam2, *, marker=True):
     """Vertical lines at the two transitions, styled as in the appendix figure."""
-    ax.axvline(lam2, color=LAMBDA_OBS_COLOR, ls=(0, (1, 1.6)), lw=LINE_WIDTH * 1.2,
-               alpha=1.0, zorder=0)
-    ax.axvline(lam1, color=LAMBDA_OBS_COLOR, ls=(0, (5, 2.5)), lw=LINE_WIDTH * 1.2,
-               alpha=1.0, zorder=0)
+    ax.axvline(
+        lam2,
+        color=LAMBDA_OBS_COLOR,
+        ls=(0, (1, 1.6)),
+        lw=LINE_WIDTH * 1.2,
+        alpha=1.0,
+        zorder=0,
+    )
+    ax.axvline(
+        lam1,
+        color=LAMBDA_OBS_COLOR,
+        ls=(0, (5, 2.5)),
+        lw=LINE_WIDTH * 1.2,
+        alpha=1.0,
+        zorder=0,
+    )
     if marker:
         add_lambda_marker(ax, lam1)
         add_lambda_marker(ax, lam2)
@@ -287,67 +324,134 @@ def add_critical_ticks(ax, lam1, lam2):
     # sort by position so the labels never swap (in the ideal case
     # lambda_2^c > lambda_1^c, in the realistic case the order reverses)
     pairs = sorted(
-        [(lam1, r"$\lambda_{QJ}^{\mathrm{c}}$"), (lam2, r"$\lambda_{SF}^{\mathrm{c}}$")]
+        [
+            (lam1, r"$\lambda_\mathrm{QJ}$"),
+            (lam2, r"$\lambda_\mathrm{SF}$"),
+        ]
     )
     sec = ax.secondary_xaxis("top")
-    sec.set_xticks([pairs[0][0]+0.04, pairs[1][0] + 0.04])
-    sec.set_xticklabels([p[1] for p in pairs], va='center')
-    sec.tick_params(axis="x", colors=LAMBDA_OBS_COLOR, width=0,
-                    length=4.0, labelsize=LABELS_FONT_SIZE/1.4)
-    for lbl in sec.get_xticklabels():
+    sec.set_xticks([p[0] for p in pairs])
+    sec.set_xticklabels([p[1] for p in pairs], va="bottom")
+    sec.tick_params(
+        axis="x",
+        colors=LAMBDA_OBS_COLOR,
+        width=0,
+        length=0,
+        pad=1.0,
+        labelsize=LEGEND_FONT_SIZE,
+    )
+
+    for lbl, alignment in zip(sec.get_xticklabels(), ("center", "center")):
+        lbl.set_horizontalalignment(alignment)
         lbl.set_color(LAMBDA_OBS_COLOR)
     sec.spines["top"].set_linewidth(LINE_WIDTH)
     return sec
 
 
-
-
-
 def plot_real_parts(ax, sorted_vals):
     """Top-row panel: real parts, with the dash-phase overlap trick."""
-    ax.plot(lams, -np.real(sorted_vals[:, 0]),
-            color=colors["e3"], lw=LINE_WIDTH, solid_capstyle="round",
-            label=r"$-e_3$", zorder=2)
-    ax.plot(lams, -np.real(sorted_vals[:, 1]),
-            color=colors["e2"], lw=LINE_WIDTH,
-            label=r"$-e_2$", zorder=3)
-    ax.plot(lams, -np.real(sorted_vals[:, 2]),
-            color=colors["e1"], lw=LINE_WIDTH,
-            label=r"$-e_1$", zorder=4)
+    ax.plot(
+        lams,
+        -np.real(sorted_vals[:, 0]),
+        color=colors["e3"],
+        lw=LINE_WIDTH,
+        solid_capstyle="round",
+        label=r"$-e_3$",
+        zorder=2,
+    )
+    ax.plot(
+        lams,
+        -np.real(sorted_vals[:, 1]),
+        color=colors["e2"],
+        lw=LINE_WIDTH,
+        label=r"$-e_2$",
+        zorder=3,
+    )
+    ax.plot(
+        lams,
+        -np.real(sorted_vals[:, 2]),
+        color=colors["e1"],
+        lw=LINE_WIDTH,
+        label=r"$-e_1$",
+        zorder=4,
+    )
     # rainbow overlay on the coincident stretch
-    ax.plot(lams, -np.real(sorted_vals[:, 0]),
-            color=colors["e3"], lw=LINE_WIDTH, ls=DASH_E3, zorder=6)
-    ax.plot(lams, -np.real(sorted_vals[:, 1]),
-            color=colors["e2"], lw=LINE_WIDTH, ls=DASH_E2, zorder=7)
+    ax.plot(
+        lams,
+        -np.real(sorted_vals[:, 0]),
+        color=colors["e3"],
+        lw=LINE_WIDTH,
+        ls=DASH_E3,
+        zorder=6,
+    )
+    ax.plot(
+        lams,
+        -np.real(sorted_vals[:, 1]),
+        color=colors["e2"],
+        lw=LINE_WIDTH,
+        ls=DASH_E2,
+        zorder=7,
+    )
 
-    ax.plot(lams, -2 * np.real(sorted_vals[:, 0]),
-            color=colors["e3"], lw=LINE_WIDTH * 0.8, ls=FIT_LINESTYLE,
-            label=r"$-2e_3$", zorder=5)
+    ax.plot(
+        lams,
+        -2 * np.real(sorted_vals[:, 0]),
+        color=colors["e3"],
+        lw=LINE_WIDTH * 0.8,
+        ls=FIT_LINESTYLE,
+        label=r"$-2e_3$",
+        zorder=5,
+    )
 
 
 def plot_imag_parts(ax, sorted_vals):
     """Bottom-row panel: Im e_n, same branch ordering and dash trick."""
-    ax.plot(lams, np.imag(sorted_vals[:, 0]),
-            color=colors["e3"], lw=LINE_WIDTH, solid_capstyle="round",
-            zorder=1)
-    ax.plot(lams, np.imag(sorted_vals[:, 1]),
-            color=colors["e2"], lw=LINE_WIDTH, solid_capstyle="round",
-            zorder=2)
-    ax.plot(lams, np.imag(sorted_vals[:, 2]),
-            color=colors["e1"], lw=LINE_WIDTH, zorder=3)
+    ax.plot(
+        lams,
+        np.imag(sorted_vals[:, 0]),
+        color=colors["e3"],
+        lw=LINE_WIDTH,
+        solid_capstyle="round",
+        zorder=1,
+    )
+    ax.plot(
+        lams,
+        np.imag(sorted_vals[:, 1]),
+        color=colors["e2"],
+        lw=LINE_WIDTH,
+        solid_capstyle="round",
+        zorder=2,
+    )
+    ax.plot(
+        lams, np.imag(sorted_vals[:, 2]), color=colors["e1"], lw=LINE_WIDTH, zorder=3
+    )
 
     # rainbow overlay on the collapsed-to-zero stretch
-    ax.plot(lams, np.imag(sorted_vals[:, 0]),
-            color=colors["e3"], lw=LINE_WIDTH, ls=DASH_E3, zorder=4)
-    ax.plot(lams, np.imag(sorted_vals[:, 1]),
-            color=colors["e2"], lw=LINE_WIDTH, ls=DASH_E2, zorder=5)
+    ax.plot(
+        lams,
+        np.imag(sorted_vals[:, 0]),
+        color=colors["e3"],
+        lw=LINE_WIDTH,
+        ls=DASH_E3,
+        zorder=4,
+    )
+    ax.plot(
+        lams,
+        np.imag(sorted_vals[:, 1]),
+        color=colors["e2"],
+        lw=LINE_WIDTH,
+        ls=DASH_E2,
+        zorder=5,
+    )
+
 
 # ============================================================
 # Figure
 # ============================================================
 
 fig, axes = plt.subplots(
-    2, 2,
+    nrows=2,
+    ncols=2,
     figsize=(TWO_COLUMN_WIDTH, TWO_COLUMN_WIDTH * 0.62),
     sharex="col",
     sharey="row",
@@ -399,16 +503,22 @@ for ax in (ax_ii, ax_ri):
     ax.set_xticklabels(["0.5", "1.0", "1.5"])
     make_ax_lines_wider(ax, labelsize=TICK_LABEL_SIZE, linewidth=LINE_WIDTH)
 
-ax_ir.set_ylabel(r"$-\mathrm{Re}(e_n)/\Omega_\mathrm{S}$")
-ax_ii.set_ylabel(r"$\mathrm{Im}(e_n)/\Omega_\mathrm{S}$")
+ax_ir.set_ylabel(r"$-\mathrm{Re}(e_k)/\Omega_\mathrm{S}$")
+ax_ii.set_ylabel(r"$\mathrm{Im}(e_k)/\Omega_\mathrm{S}$")
 
 # put both y labels at the same x position so they stack exactly
 fig.align_ylabels([ax_ir, ax_ii])
 
 # ---- legends, as in the pole plots ----
-leg = ax_ir.legend(loc="upper left", fontsize=LABELS_FONT_SIZE/1.7,
-             ncol=1, handlelength=2.8,
-             handletextpad=0.5, labelspacing=0.3, borderpad=0.35)
+leg = ax_ir.legend(
+    loc="upper left",
+    fontsize=LEGEND_FONT_SIZE,
+    ncol=1,
+    handlelength=2.8,
+    handletextpad=0.5,
+    labelspacing=0.3,
+    borderpad=0.35,
+)
 
 # the curve's own dash pattern is scaled by its line width, so at handle
 # length it renders as one long stroke -- give the key a tighter pattern so
@@ -421,8 +531,7 @@ leg.legend_handles[-1].set_dashes([4.0, 2.0])
 
 for ext in ("pdf", "svg", "png"):
     path = OUTDIR / f"{STEM}.{ext}"
-    fig.savefig(path, dpi=DPI, bbox_inches="tight", pad_inches=0.1,
-                transparent=True)
+    fig.savefig(path, dpi=DPI, bbox_inches="tight", pad_inches=0.1, transparent=True)
     print(f"Saved: {path}")
 
 print(f"lambda1_ideal = {lam1_ideal:.6f}")
